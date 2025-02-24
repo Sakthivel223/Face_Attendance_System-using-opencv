@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add New Employee -Face Recognition System</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.3.0/css/all.min.css">
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --success-color: #2ecc71;
+            --danger-color: #e74c3c;
+            --light-color: #ecf0f1;
+            --dark-color: #34495e;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        body {
+            background-color: #f5f5f5;
+            color: #333;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 20px 0;
+            text-align: center;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .main-title {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+        
+        .sub-title {
+            font-size: 1.2rem;
+            font-weight: normal;
+            opacity: 0.9;
+        }
+        
+        .content {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px 0;
+        }
+        
+        .video-container {
+            width: 100%;
+            max-width: 800px;
+            height: 600px;
+            margin: 20px 0;
+            background-color: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            position: relative;
+        }
+        
+        .video-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .form-container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin: 20px 0;
+            width: 100%;
+            max-width: 800px;
+        }
+        
+        .form-title {
+            margin-bottom: 20px;
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--light-color);
+            padding-bottom: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: var(--dark-color);
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: var(--secondary-color);
+            box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2);
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .btn-primary {
+            background-color: var(--secondary-color);
+            color: white;
+        }
+        
+        .btn-success {
+            background-color: var(--success-color);
+            color: white;
+        }
+        
+        .btn-danger {
+            background-color: var(--danger-color);
+            color: white;
+        }
+        
+        .btn-info {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        .btn:active {
+            transform: translateY(0);
+        }
+        
+        .button-panel {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        
+        footer {
+            background-color: var(--primary-color);
+            color: white;
+            text-align: center;
+            padding: 20px 0;
+            margin-top: 40px;
+        }
+        
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            color: white;
+            z-index: 100;
+            display: none;
+        }
+        
+        .spinner {
+            border: 5px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top: 5px solid var(--secondary-color);
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin-bottom: 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: white;
+            color: #333;
+            padding: 15px 20px;
+            border-radius: 4px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            z-index: 1000;
+            transform: translateX(150%);
+            transition: transform 0.3s ease;
+        }
+        
+        .toast.success {
+            border-left: 4px solid var(--success-color);
+        }
+        
+        .toast.error {
+            border-left: 4px solid var(--danger-color);
+        }
+        
+        .toast.show {
+            transform: translateX(0);
+        }
+        
+        .steps-container {
+            width: 100%;
+            max-width: 800px;
+            margin: 20px 0;
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .steps {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            position: relative;
+        }
+        
+        .steps:after {
+            content: '';
+            position: absolute;
+            top: 14px;
+            left: 0;
+            width: 100%;
+            height: 2px;
+            background-color: var(--light-color);
+            z-index: 1;
+        }
+        
+        .step {
+            position: relative;
+            z-index: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 33.333%;
+        }
+        
+        .step-circle {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background-color: var(--light-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #666;
+            margin-bottom: 8px;
+            font-weight: bold;
+            transition: all 0.3s ease;
+        }
+        
+        .step.active .step-circle {
+            background-color: var(--secondary-color);
+            color: white;
+        }
+        
+        .step.completed .step-circle {
+            background-color: var(--success-color);
+            color: white;
+        }
+        
+        .step-title {
+            text-align: center;
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: #666;
+        }
+        
+        .step.active .step-title {
+            color: var(--secondary-color);
+            font-weight: bold;
+        }
+        
+        .step.completed .step-title {
+            color: var(--success-color);
+        }
+        
+        .capture-info {
+            background-color: var(--light-color);
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+        }
+        
+        .capture-info i {
+            color: var(--secondary-color);
+            margin-right: 8px;
+        }
+        
+        .progress-container {
+            width: 100%;
+            height: 8px;
+            background-color: var(--light-color);
+            border-radius: 4px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            width: 0;
+            background-color: var(--success-color);
+            transition: width 0.3s ease;
+        }
+        
+        .disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Media Queries */
+        
+        /* Large Devices (Desktops, less than 1200px) */
+        @media (max-width: 1199.98px) {
+            .container {
+                max-width: 960px;
+            }
+        }
+        
+        /* Medium Devices (Tablets, less than 992px) */
+        @media (max-width: 991.98px) {
+            .container {
+                max-width: 720px;
+            }
+            
+            .main-title {
+                font-size: 1.8rem;
+            }
+            
+            .video-container {
+                height: 500px;
+            }
+        }
+        
+        /* Small Devices (Landscape Phones, less than 768px) */
+        @media (max-width: 767.98px) {
+            .container {
+                max-width: 540px;
+                padding: 15px;
+            }
+            
+            .main-title {
+                font-size: 1.5rem;
+            }
+            
+            .sub-title {
+                font-size: 1rem;
+            }
+            
+            .video-container {
+                height: 400px;
+            }
+            
+            .form-container {
+                padding: 20px;
+            }
+            
+            .button-panel {
+                flex-direction: column;
+                width: 100%;
+            }
+            
+            .btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .step-title {
+                font-size: 0.8rem;
+            }
+        }
+        
+        /* Extra Small Devices (Portrait Phones, less than 576px) */
+        @media (max-width: 575.98px) {
+            .container {
+                padding: 10px;
+            }
+            
+            .main-title {
+                font-size: 1.3rem;
+            }
+            
+            .sub-title {
+                font-size: 0.9rem;
+            }
+            
+            .video-container {
+                height: 300px;
+                margin: 10px 0;
+            }
+            
+            .form-container, .steps-container {
+                padding: 15px;
+                margin: 10px 0;
+            }
+            
+            .form-title {
+                font-size: 1.2rem;
+                margin-bottom: 15px;
+            }
+            
+            .form-label {
+                font-size: 0.9rem;
+            }
+            
+            .form-input {
+                padding: 10px;
+                font-size: 0.9rem;
+            }
+            
+            .btn {
+                padding: 10px 15px;
+                font-size: 0.9rem;
+            }
+            
+            .step-circle {
+                width: 25px;
+                height: 25px;
+                font-size: 0.8rem;
+            }
+            
+            .steps:after {
+                top: 12px;
+            }
+            
+            .step-title {
+                font-size: 0.7rem;
+            }
+            
+            .toast {
+                top: 10px;
+                right: 10px;
+                padding: 10px 15px;
+                font-size: 0.9rem;
+                max-width: calc(100% - 20px);
+            }
+            
+            .spinner {
+                width: 40px;
+                height: 40px;
+            }
+        }
+        
+        /* For very small devices */
+        @media (max-width: 320px) {
+            .main-title {
+                font-size: 1.1rem;
+            }
+            
+            .video-container {
+                height: 240px;
+            }
+            
+            .form-title {
+                font-size: 1.1rem;
+            }
+            
+            .employeeDetails {
+                font-size: 0.8rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1 class="main-title">Face Recognition System</h1>
+            <p class="sub-title">Add New Employee</p>
+        </div>
+    </header>
+    
+    <div class="container content">
+        <div class="steps-container">
+            <div class="steps">
+                <div class="step active" id="step1">
+                    <div class="step-circle">1</div>
+                    <div class="step-title">Enter Details</div>
+                </div>
+                <div class="step" id="step2">
+                    <div class="step-circle">2</div>
+                    <div class="step-title">Capture Images</div>
+                </div>
+                <div class="step" id="step3">
+                    <div class="step-circle">3</div>
+                    <div class="step-title">Complete</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-container" id="detailsForm">
+            <h2 class="form-title"><i class="fas fa-user-plus"></i> Employee Information</h2>
+            
+            <div class="form-group">
+                <label class="form-label" for="employeeName">Employee Name</label>
+                <input type="text" id="employeeName" class="form-input" placeholder="Enter full name" required>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label" for="employeeId">Employee ID</label>
+                <input type="text" id="employeeId" class="form-input" placeholder="Enter employee ID" required>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label" for="department">Department</label>
+                <input type="text" id="department" class="form-input" placeholder="Enter department" required>
+            </div>
+            
+            <div class="button-panel">
+                <button class="btn btn-primary" id="nextToCapture" onclick="goToCapture()">
+                    <i class="fas fa-camera"></i> Next: Capture Images
+                </button>
+                <button class="btn btn-danger" onclick="window.location.href='/'">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+            </div>
+        </div>
+        
+        <div class="video-container" id="captureContainer" style="display: none;">
+            <img src="{{ url_for('video_feed') }}" alt="Video Feed" class="video-feed">
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <p>Starting camera...</p>
+            </div>
+        </div>
+        
+        <div class="form-container" id="captureForm" style="display: none;">
+            <h2 class="form-title"><i class="fas fa-camera"></i> Capture Face Images</h2>
+            
+            <div class="capture-info">
+                <i class="fas fa-info-circle"></i> Position your face clearly in the camera. The system will capture 10 images automatically.
+            </div>
+            
+            <div class="progress-container">
+                <div class="progress-bar" id="captureProgress"></div>
+            </div>
+            
+            <p id="captureStatus">Ready to capture 0/10 images</p>
+            
+            <div class="button-panel">
+                <button class="btn btn-success" id="startCaptureBtn" onclick="startCapture()">
+                    <i class="fas fa-play"></i> Start Capture
+                </button>
+                <button class="btn btn-danger" onclick="backToDetails()">
+                    <i class="fas fa-arrow-left"></i> Back
+                </button>
+            </div>
+        </div>
+        
+        <div class="form-container" id="completeForm" style="display: none;">
+            <h2 class="form-title"><i class="fas fa-check-circle"></i> Registration Complete</h2>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <i class="fas fa-check-circle" style="font-size: 60px; color: var(--success-color);"></i>
+                <p style="margin-top: 20px; font-size: 1.2rem;">Employee successfully registered!</p>
+                <p id="employeeDetails" style="margin-top: 10px; color: var(--dark-color);"></p>
+            </div>
+            
+            <div class="button-panel">
+                <button class="btn btn-primary" onclick="window.location.href='/'">
+                    <i class="fas fa-home"></i> Back to Dashboard
+                </button>
+                <button class="btn btn-success" onclick="resetForm()">
+                    <i class="fas fa-plus"></i> Add Another Employee
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="toast" id="toast">
+        <span id="toastMessage">Message here</span>
+    </div>
+    
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 Face Recognition System | All Rights Reserved</p>
+        </div>
+    </footer>
+    
+    <script>
+        let employeeData = {
+            name: "",
+            id: "",
+            department: ""
+        };
+        
+        let captureCount = 0;
+        
+        function validateDetails() {
+            const name = document.getElementById('employeeName').value.trim();
+            const id = document.getElementById('employeeId').value.trim();
+            const department = document.getElementById('department').value.trim();
+            
+            if (!name || !id || !department) {
+                showToast('Please fill in all fields', 'error');
+                return false;
+            }
+            
+            // Store data
+            employeeData.name = name;
+            employeeData.id = id;
+            employeeData.department = department;
+            
+            return true;
+        }
+        
+        function goToCapture() {
+            if (!validateDetails()) return;
+            
+            // Update steps
+            document.getElementById('step1').classList.remove('active');
+            document.getElementById('step1').classList.add('completed');
+            document.getElementById('step2').classList.add('active');
+            
+            // Hide details form, show capture container
+            document.getElementById('detailsForm').style.display = 'none';
+            document.getElementById('captureContainer').style.display = 'block';
+            document.getElementById('captureForm').style.display = 'block';
+        }
+        
+        function backToDetails() {
+            // Update steps
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step1').classList.remove('completed');
+            document.getElementById('step1').classList.add('active');
+            
+            // Hide capture container, show details form
+            document.getElementById('captureContainer').style.display = 'none';
+            document.getElementById('captureForm').style.display = 'none';
+            document.getElementById('detailsForm').style.display = 'block';
+        }
+        
+        function startCapture() {
+            // Show loading overlay
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            document.getElementById('startCaptureBtn').disabled = true;
+            document.getElementById('startCaptureBtn').classList.add('disabled');
+            
+            // Start the capture process
+            fetch('/start_capture', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username: employeeData.name
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Hide loading overlay
+                document.getElementById('loadingOverlay').style.display = 'none';
+                
+                if (data.success) {
+                    showToast('Capture started. Please look at the camera', 'success');
+                    
+                    // Start monitoring capture progress
+                    captureCount = 0;
+                    updateCaptureProgress();
+                    monitorCaptureProgress();
+                } else {
+                    showToast('Failed to start capture: ' + data.status, 'error');
+                    document.getElementById('startCaptureBtn').disabled = false;
+                    document.getElementById('startCaptureBtn').classList.remove('disabled');
+                }
+            })
+            .catch(error => {
+                // Hide loading overlay
+                document.getElementById('loadingOverlay').style.display = 'none';
+                console.error('Error:', error);
+                showToast('Error connecting to server', 'error');
+                document.getElementById('startCaptureBtn').disabled = false;
+                document.getElementById('startCaptureBtn').classList.remove('disabled');
+            });
+        }
+        
+        function updateCaptureProgress() {
+            const progressBar = document.getElementById('captureProgress');
+            const progressText = document.getElementById('captureStatus');
+            
+            const percentage = (captureCount / 10) * 100;
+            progressBar.style.width = percentage + '%';
+            progressText.textContent = `Capturing ${captureCount}/10 images`;
+        }
+        
+        function monitorCaptureProgress() {
+            // This is a simulation since we don't have a real-time API to check progress
+            // In a real application, you would poll an API or use WebSockets
+            const checkInterval = setInterval(() => {
+                // Increment capture count (this would normally come from the server)
+                captureCount++;
+                updateCaptureProgress();
+                
+                if (captureCount >= 10) {
+                    clearInterval(checkInterval);
+                    completeCapture();
+                }
+            }, 1500); // Check every 1.5 seconds
+        }
+        
+        function completeCapture() {
+            // Update steps
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step2').classList.add('completed');
+            document.getElementById('step3').classList.add('active');
+            
+            // Hide capture container and form, show complete form
+            document.getElementById('captureContainer').style.display = 'none';
+            document.getElementById('captureForm').style.display = 'none';
+            document.getElementById('completeForm').style.display = 'block';
+            
+            // Update employee details in the complete form
+            document.getElementById('employeeDetails').textContent = 
+                `Name: ${employeeData.name} | ID: ${employeeData.id} | Department: ${employeeData.department}`;
+            
+            showToast('Registration completed successfully!', 'success');
+        }
+        
+        function resetForm() {
+            // Reset all form fields
+            document.getElementById('employeeName').value = '';
+            document.getElementById('employeeId').value = '';
+            document.getElementById('department').value = '';
+            
+            // Reset capture progress
+            document.getElementById('captureProgress').style.width = '0%';
+            document.getElementById('captureStatus').textContent = 'Ready to capture 0/10 images';
+            document.getElementById('startCaptureBtn').disabled = false;
+            document.getElementById('startCaptureBtn').classList.remove('disabled');
+            
+            // Reset steps
+            document.getElementById('step1').classList.add('active');
+            document.getElementById('step1').classList.remove('completed');
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step2').classList.remove('completed');
+            document.getElementById('step3').classList.remove('active');
+            
+            // Show details form, hide others
+            document.getElementById('detailsForm').style.display = 'block';
+            document.getElementById('captureContainer').style.display = 'none';
+            document.getElementById('captureForm').style.display = 'none';
+            document.getElementById('completeForm').style.display = 'none';
+        }
+        
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            
+            // Set message and type
+            toastMessage.textContent = message;
+            toast.className = 'toast ' + type + ' show';
+            
+            // Auto hide after 3 seconds
+            setTimeout(() => {
+                toast.className = 'toast ' + type;
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
