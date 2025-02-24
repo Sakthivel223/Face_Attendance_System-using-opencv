@@ -1,0 +1,16 @@
+# Python cache files
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+env/
+
+# Credentials
+credentials.json
+
+# Logs
+*.log
+
+# Dataset
+Dataset/
