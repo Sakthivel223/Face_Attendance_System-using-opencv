@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+opencv-python
+numpy
+face-recognition
+pandas
+openpyxl
+pyttsx3
+jinja2
+python-multipart
+asyncio
