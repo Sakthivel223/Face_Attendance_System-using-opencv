@@ -1,3 +1,4 @@
+import logging
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -54,12 +55,7 @@ tts_engine.setProperty('volume', 0.9)  # Volume (0 to 1)
 voice_greeting_cooldown = {}
 GREETING_COOLDOWN_TIME = 10  # seconds between greetings for the same person
 
-for index in range(4):  # Try camera indices 0, 1, 2, 3
-    cap = cv2.VideoCapture(index)
-    if cap.isOpened():
-        print(f"Camera index {index} works!")
-        cap.release()
-        break
+
 
     
 # Ensure necessary directories exist
@@ -137,213 +133,107 @@ def speak_greeting(name):
     greeting_thread.start()
 
 # Safe camera initialization function
+def force_stop_camera():
+    global camera
+
+    with camera_lock:
+        if camera is not None:
+            print("🔴 Force stopping existing camera process...")
+            camera.release()
+            camera = None
+            time.sleep(1)  # Allow time for the camera to reset
+
 def initialize_camera():
     global camera
-    
+
+    force_stop_camera()  # Ensure no other process is using the camera
+
     try:
         with camera_lock:
-            if camera is not None:
-                camera.release()
-                camera = None
-                time.sleep(1)
-
-            # Try different camera indices
-            for cam_index in [0, 1, -1, 2, 3]:  # Extended camera indices
-                print(f"Trying camera index {cam_index}")
+            for cam_index in [0, 1, 2]:  # Try multiple indices
+                print(f"🎥 Trying camera index {cam_index}...")
                 camera = cv2.VideoCapture(cam_index)
-                
+
                 if camera.isOpened():
-                    # Test frame capture
+                    time.sleep(2)  # Allow camera to stabilize
                     ret, _ = camera.read()
                     if ret:
-                        print(f"Camera {cam_index} initialized")
+                        print(f"✅ Camera {cam_index} initialized successfully!")
                         camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                         return True
-                    else:
-                        camera.release()
-                        camera = None
 
-            print("All camera indices failed")
-            return False
-            
-    except Exception as e:
-        print(f"Camera init error: {e}")
+                # Close camera if it failed
+                force_stop_camera()
+
+        print("🚨 All camera indices failed. Camera is not available.")
         return False
-    
+    except Exception as e:
+        print(f"🚨 Camera initialization error: {e}")
+        return False
 
 # Function to run face recognition in a separate thread
 def face_recognition_thread():
     global recognition_active, camera
-    
-    print("Starting face recognition thread...")
-    
-    try:
-        # Load known faces when recognition starts
-        load_known_faces()
-        
-        # Initialize camera if needed
-        camera_initialized = False
-        with camera_lock:
-            if camera is None or not camera.isOpened():
-                camera_initialized = initialize_camera()
-            else:
-                camera_initialized = True
-                
-        if not camera_initialized:
-            print("Error: Could not initialize camera")
-            recognition_active = False
-            return
-        
-        face_locations = []
-        face_encodings = []
-        face_names = []
-        process_this_frame = True
-        
-        last_recognition_time = {}
-        recognition_cooldown = 5  # seconds between recognizing the same person
-        
-        consecutive_failures = 0
-        max_failures = 5
-        
-        while recognition_active:
-            # Grab a single frame of video
-            with camera_lock:
-                if camera is None or not camera.isOpened():
-                    consecutive_failures += 1
-                    print(f"Camera not available (failure {consecutive_failures}/{max_failures})")
-                    
-                    if consecutive_failures >= max_failures:
-                        print("Too many camera failures, reinitializing...")
-                        initialize_camera()
-                        consecutive_failures = 0
-                        
-                    time.sleep(1)
-                    continue
-                    
-                ret, frame = camera.read()
-                
-                if not ret:
-                    consecutive_failures += 1
-                    print(f"Failed to grab frame (failure {consecutive_failures}/{max_failures})")
-                    
-                    if consecutive_failures >= max_failures:
-                        print("Too many frame grab failures, reinitializing camera...")
-                        initialize_camera()
-                        consecutive_failures = 0
-                        
-                    time.sleep(0.5)
-                    continue
-                    
-                # Reset failure counter when successfully getting a frame
-                consecutive_failures = 0
-            
-            # Only process every other frame to save CPU
-            if process_this_frame:
-                # Resize frame to 1/4 size for faster processing
-                small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
-                
-                # Convert from BGR to RGB (which face_recognition uses)
-                rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-                
-                # Find all faces in the current frame
-                face_locations = face_recognition.face_locations(rgb_small_frame)
-                face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
-                
-                face_names = []
-                for face_encoding in face_encodings:
-                    # Check if the face matches any known face
-                    matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=CONFIDENCE_THRESHOLD)
-                    name = "Unknown"
-                    
-                    # Use the known face with the smallest distance to the new face
-                    if len(known_face_encodings) > 0:
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                        best_match_index = np.argmin(face_distances)
-                        if matches[best_match_index]:
-                            name = known_face_names[best_match_index]
-                    
-                    face_names.append(name)
-                    
-                    # If we recognized someone (not "Unknown"), log attendance and speak greeting
-                    if name != "Unknown":
-                        current_time = time.time()
-                        
-                        # Check if we recently recognized this person (to avoid multiple logs)
-                        if name not in last_recognition_time or (current_time - last_recognition_time[name]) > recognition_cooldown:
-                            last_recognition_time[name] = current_time
-                            
-                            # Log attendance
-                            today = datetime.date.today().isoformat()
-                            if today not in attendance_log:
-                                attendance_log[today] = set()
-                            
-                            # Only add to attendance if not already present today
-                            if name not in attendance_log[today]:
-                                attendance_log[today].add(name)
-                                # Update Excel log
-                                update_excel_log(name)
-                            
-                            recognition_event = {
-                                             "name": str(name),
-                                             "time": datetime.datetime.now().strftime("%H:%M:%S"),
-                                             "attendance_count": len(attendance_log[today])
-                                                }
 
-                                # Add validation before adding to events
-                            if add_recognition_event(recognition_event):
-                                  print(f"Recognized: {name} at {recognition_event['time']}")
-                            else:
-                                  print(f"Failed to add recognition event for: {name}")
-                            
-                            # Voice greeting with cooldown
-                            if name not in voice_greeting_cooldown or (current_time - voice_greeting_cooldown[name]) > GREETING_COOLDOWN_TIME:
-                                voice_greeting_cooldown[name] = current_time
-                                speak_greeting(name)
-            
-            process_this_frame = not process_this_frame
-            
-            # Draw boxes around faces and label them in the frame
+    print("Starting face recognition thread...")
+
+    try:
+        load_known_faces()
+
+        with camera_lock:
+             if camera is None or not camera.isOpened():
+                  print("🚨 Camera not initialized. Stopping recognition.")
+                  recognition_active = False
+                  return
+
+
+
+        while recognition_active:
+            with camera_lock:
+                ret, frame = camera.read()
+                if not ret:
+                    continue
+
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_locations = face_recognition.face_locations(rgb_frame)
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+            face_names = []
+            for face_encoding in face_encodings:
+                matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=0.6)
+                name = "Unknown"
+
+                if True in matches:
+                    first_match_index = matches.index(True)
+                    name = known_face_names[first_match_index]
+
+                    # Speak the name if recognized
+                    speak_greeting(name)
+
+                face_names.append(name)
+
             for (top, right, bottom, left), name in zip(face_locations, face_names):
-                # Scale back up face locations since we detected on scaled image
-                top *= 4
-                right *= 4
-                bottom *= 4
-                left *= 4
-                
-                # Draw a box around the face - green for known, red for unknown
-                box_color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
-                cv2.rectangle(frame, (left, top), (right, bottom), box_color, 2)
-                
-                # Draw a label with the name below the face
-                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), box_color, cv2.FILLED)
+                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
                 cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 1.0, (255, 255, 255), 1)
-            
-            # Store the processed frame for streaming
-            try:
-                _, buffer = cv2.imencode('.jpg', frame)
-                latest_frame_buffer = buffer.tobytes()
-                
-                # Add the frame to the global frame buffer for streaming
-                add_frame_to_buffer(latest_frame_buffer)
-            except Exception as e:
-                print(f"Error encoding frame: {e}")
-            
-            # Control the frame rate
-            time.sleep(DETECTION_INTERVAL)
-    
+
+            _, buffer = cv2.imencode('.jpg', frame)
+            latest_frame_buffer = buffer.tobytes()
+            add_frame_to_buffer(latest_frame_buffer)
+
+            time.sleep(0.1)
+
     except Exception as e:
         print(f"Error in face recognition thread: {e}")
-    
     finally:
-        print("Face recognition thread stopped")
         recognition_active = False
-        
-        # Release camera resources
         with camera_lock:
             if camera is not None:
                 camera.release()
                 camera = None
+
 
 # Function to update Excel attendance log
 def update_excel_log(employee_name):
@@ -515,12 +405,25 @@ async def ping():
 @app.get("/check_status")
 async def check_status():
     global recognition_active
+
+    # Ensure camera status is properly reported
+    camera_status = False
+    with camera_lock:
+        if camera is not None and camera.isOpened():
+            ret, _ = camera.read()
+            camera_status = ret
+
+    logging.debug(f"Status check request received. recognition_active={recognition_active}, camera_available={camera_status}")
+
     return {
         "success": True,
         "recognition_active": recognition_active,
-        "camera_available": camera is not None and (camera.isOpened() if camera is not None else False),
+        "camera_available": camera_status,
         "known_faces_count": len(known_face_names)
     }
+
+
+
 
 # Modify the recognized_faces_stream function
 @app.get("/recognized_faces")
@@ -585,7 +488,6 @@ async def video_feed():
                 else:
                     # If no frame is available, send a placeholder image
                     placeholder_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                    # Add text to black frame
                     cv2.putText(placeholder_frame, "Camera not available", (120, 240), 
                                cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
                     
@@ -612,91 +514,83 @@ async def video_feed():
                 yield b'\r\n'
                 
                 await asyncio.sleep(1)  # Delay after error
-    
-    return Response(
-        content=generate_frames(),
-        media_type='multipart/x-mixed-replace; boundary=frame',
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Pragma": "no-cache"
-        }
-    )
+
+    # ✅ FIX: Use StreamingResponse instead of return inside the generator
+    return StreamingResponse(generate_frames(), media_type='multipart/x-mixed-replace; boundary=frame')
 
 # Modified start_recognition and stop_recognition functions to ensure camera only runs when needed
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+
 @app.post("/start_recognition")
 async def start_recognition():
     global recognition_active, recognition_thread, camera
-    
+
+    logging.debug(f"🟢 Received request to start recognition. Current status: recognition_active={recognition_active}")
+
     if recognition_active:
+        logging.warning("⚠️ Recognition is already running. Request ignored.")
         return {"success": False, "status": "Recognition is already running"}
 
     try:
         init_attendance_log()
 
-        # Clear previous recognition data
-        with recognition_events_lock:
-            global recognition_events
-            recognition_events = []
+        logging.debug("🔄 Stopping any previous camera sessions before starting new recognition.")
+        
+        # Ensure camera is properly restarted
+        force_stop_camera()
+        camera_initialized = initialize_camera()
 
-        # Camera initialization with retries
-        max_retries = 3
-        for attempt in range(max_retries):
-            camera_success = initialize_camera()
-            if camera_success:
-                break
-            time.sleep(1)
-        else:
-            return {"success": False, "status": "Camera initialization failed after 3 attempts"}
+        if not camera_initialized:
+            logging.error("🚨 Camera initialization failed.")
+            return {"success": False, "status": "Camera initialization failed"}
 
-        # Start recognition thread if not already running
-        recognition_active = True
+        if camera is None or not camera.isOpened():
+            logging.error("🚨 Camera failed to open.")
+            return {"success": False, "status": "Camera failed to open"}
 
-        if recognition_thread and recognition_thread.is_alive():
-            print("Warning: Old recognition thread is still running. Restarting...")
-            recognition_active = False
-            recognition_thread.join(timeout=2.0)
+        recognition_active = True  # Mark recognition as active only if camera is ready
+        logging.info("✅ Recognition marked as active. Starting recognition thread...")
 
-        recognition_thread = threading.Thread(target=face_recognition_thread)
-        recognition_thread.daemon = True
+        recognition_thread = threading.Thread(target=face_recognition_thread, daemon=True)
         recognition_thread.start()
 
         return {"success": True, "status": "Recognition started"}
 
     except Exception as e:
+        logging.error(f"❌ Error starting recognition: {e}")
         recognition_active = False
-        with camera_lock:
-            if camera:
-                camera.release()
-                camera = None
+        force_stop_camera()  # Ensure camera is stopped before returning error
         return {"success": False, "status": f"Error: {str(e)}"}
 
 
 @app.post("/stop_recognition")
 async def stop_recognition():
     global recognition_active, recognition_thread, camera
-    
+
+    logging.debug(f"Received request to stop recognition. Current status: recognition_active={recognition_active}")
+
     if not recognition_active:
+        logging.warning("Recognition is not running. Request ignored.")
         return {"success": False, "status": "Recognition is not running"}
 
     try:
-        # Stop recognition thread
-        recognition_active = False
+        recognition_active = False  # Stop recognition before stopping thread
+        logging.info("Recognition marked as inactive. Stopping recognition thread...")
 
-        # Wait for thread to complete
         if recognition_thread and recognition_thread.is_alive():
             recognition_thread.join(timeout=2.0)
-            recognition_thread = None  # Set to None after stopping
+            recognition_thread = None  # Reset thread
 
-        # Release camera
         with camera_lock:
             if camera is not None:
+                logging.debug("Releasing camera resource...")
                 camera.release()
                 camera = None
 
         return {"success": True, "status": "Recognition stopped"}
 
     except Exception as e:
+        logging.error(f"Error stopping recognition: {e}")
         return {"success": False, "status": f"Error stopping recognition: {str(e)}"}
 
 @app.get("/get_known_users")

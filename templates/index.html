@@ -563,37 +563,27 @@ function updateUptime() {
 }
 
 function checkSystemStatus() {
-    showToast('Checking system status...', 'info');
-    
-    fetch('/check_status')
-        .then(response => {
-            if (!response.ok) {
-                throw new Error(`Server returned ${response.status}`);
-            }
-            return response.json();
-        })
+    if (window.checkingStatus) {
+        return; // Prevent duplicate requests
+    }
+    window.checkingStatus = true;
+
+    fetch("/check_status")
+        .then(response => response.json())
         .then(data => {
-            if (data && data.success) {
-                recognitionActive = data.recognition_active;
-                updateStatusDisplay();
-                
-                if (recognitionActive && !cameraInitialized) {
-                    initializeCamera()
-                        .catch(error => {
-                            console.error('Camera init error:', error);
-                            showToast('Failed to initialize camera: ' + error.message, 'error');
-                        });
-                }
-            } else {
-                throw new Error((data && data.status) || 'Unknown status error');
-            }
+            console.log("Recognition status received:", data);
+            recognitionActive = data.recognition_active;
+            updateStatusDisplay();
         })
         .catch(error => {
-            console.warn('Error checking system status:', error);
-            showToast('Error checking system status. Retrying in 5 seconds...', 'error');
-            setTimeout(checkSystemStatus, 5000);
+            console.warn("Error checking system status:", error);
+            showToast("Error checking system status. Retrying...", "error");
+        })
+        .finally(() => {
+            window.checkingStatus = false;
         });
 }
+
 
 function updateStatusDisplay() {
     const statusElement = document.getElementById('status');
@@ -720,201 +710,129 @@ function stopCamera() {
     }
 }
 
+let recognitionStarting = false;
+
 function startRecognition() {
-    if (recognitionActive) {
-        showToast('Recognition is already running', 'info');
+    if (recognitionStarting) {
+        console.warn("Recognition is already starting. Ignoring duplicate request.");
         return;
     }
-    
-    loadingOverlay.style.display = 'flex';
-    loadingOverlay.querySelector('p').textContent = 'Starting recognition...';
-    document.getElementById('startBtn').disabled = true;
-    
-    // First, make sure the camera is initialized
-    initializeCamera()
-        .then(() => {
-            // Then start recognition on the server
-            return fetch('/start_recognition', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ timestamp: new Date().toISOString() })
-            });
-        })
-        .then(response => {
-            if (!response.ok) {
-                const contentType = response.headers.get("content-type");
-                if (contentType && contentType.indexOf("application/json") !== -1) {
-                    return response.json().then(data => {
-                        throw new Error(data.status || `Server returned ${response.status}`);
-                    });
-                }
-                throw new Error(`Server returned ${response.status}`);
-            }
-            return response.json();
-        })
+
+    recognitionStarting = true; // Mark as starting to prevent duplicate requests
+    showToast('Checking recognition status...', 'info');
+
+    fetch('/check_status')
+        .then(response => response.json())
         .then(data => {
-            loadingOverlay.style.display = 'none';
-            if (data && data.success) {
-                recognitionActive = true;
-                updateStatusDisplay();
-                document.getElementById('lastRecognition').textContent = new Date().toLocaleTimeString();
-                showToast('Recognition system started successfully!', 'success');
-                speakMessage('Face recognition system activated');
-                
-                // Make sure SSE is connected
-                if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
-                    setupSSEListener();
-                }
-            } else {
-                throw new Error((data && data.status) || 'Unknown error starting recognition');
+            if (data.recognition_active) {
+                showToast('Recognition is already running!', 'error');
+                recognitionStarting = false;
+                return;
             }
+
+            if (!data.camera_available) {
+                showToast('🚨 Camera is not available. Please check the device!', 'error');
+                recognitionStarting = false;
+                return;
+            }
+
+            return fetch('/start_recognition', { method: 'POST' });
+        })
+        .then(response => response?.json())
+        .then(data => {
+            if (!data?.success) {
+                throw new Error(data?.status || 'Unknown error');
+            }
+            showToast('Recognition started successfully!', 'success');
+            recognitionActive = true;
+            updateStatusDisplay();
+            setupSSEListener();
         })
         .catch(error => {
-            loadingOverlay.style.display = 'none';
             console.error('Error starting recognition:', error);
             showToast('Error: ' + error.message, 'error');
         })
         .finally(() => {
-            document.getElementById('startBtn').disabled = false;
+            recognitionStarting = false;
         });
 }
 
+
 function stopRecognition() {
-    if (!recognitionActive) {
-        showToast('Recognition is already stopped', 'info');
-        return;
-    }
-    
-    document.getElementById('stopBtn').disabled = true;
-    loadingOverlay.style.display = 'flex';
-    loadingOverlay.querySelector('p').textContent = 'Stopping recognition...';
-    
-    fetch('/stop_recognition', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timestamp: new Date().toISOString() })
-    })
-    .then(response => {
-        if (!response.ok) {
-            const contentType = response.headers.get("content-type");
-            if (contentType && contentType.indexOf("application/json") !== -1) {
-                return response.json().then(data => {
-                    throw new Error(data.status || `Server returned ${response.status}`);
-                });
-            }
-            throw new Error(`Server returned ${response.status}`);
-        }
-        return response.json();
-    })
-    .then(data => {
-        loadingOverlay.style.display = 'none';
-        if (data && data.success) {
+    showToast('⏹ Stopping recognition...', 'info');
+
+    fetch('/stop_recognition', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.status || 'Unknown error');
+            showToast('✅ Recognition stopped successfully!', 'success');
             recognitionActive = false;
             updateStatusDisplay();
-            stopCamera();
-            showToast('Recognition system stopped', 'success');
-            speakMessage('Face recognition system deactivated');
-        } else {
-            throw new Error((data && data.status) || 'Unknown error stopping recognition');
-        }
-    })
-    .catch(error => {
-        loadingOverlay.style.display = 'none';
-        console.error('Error stopping recognition:', error);
-        showToast('Error: ' + error.message, 'error');
-    })
-    .finally(() => {
-        document.getElementById('stopBtn').disabled = false;
-    });
+            stopCamera();  // Ensure camera stops
+        })
+        .catch(error => {
+            console.error('❌ Error stopping recognition:', error);
+            showToast('Error: ' + error.message, 'error');
+        });
 }
 
-function showToast(message, type = 'success') {
-    const toast = document.getElementById('toast');
-    const toastMessage = document.getElementById('toastMessage');
-    
-    if (!toast || !toastMessage) {
-        console.warn('Toast elements not found');
-        return;
+function stopCamera() {
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+        cameraInitialized = false;
+        videoFeed.srcObject = null;
     }
-    
-    if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
-    
-    toastMessage.textContent = message;
-    toast.className = 'toast ' + type + ' show';
-    
-    toast.hideTimeout = setTimeout(() => {
-        toast.className = 'toast ' + type;
-    }, 3000);
 }
+
+
 
 // Event listener for recognized faces using Server-Sent Events
 function setupSSEListener() {
-    // Close existing connection if there is one
+    // ✅ Close any existing SSE connection before opening a new one
     if (window.facesEventSource) {
         try {
             window.facesEventSource.close();
         } catch (e) {
-            console.warn('Error closing existing SSE connection:', e);
+            console.warn("Error closing existing SSE connection:", e);
         }
     }
     
     try {
-        const eventSource = new EventSource("/recognized_faces");
-        
-        eventSource.onopen = () => {
-            console.log('SSE connection opened');
-            showToast('Connected to recognition service', 'info');
-            reconnectAttempts = 0; // Reset reconnect attempts on successful connection
-            reconnectDelay = 5000; // Reset delay
+        window.facesEventSource = new EventSource("/recognized_faces");
+
+        window.facesEventSource.onopen = () => {
+            console.log("SSE connection opened");
+            showToast("Connected to recognition service", "info");
         };
-        
-        eventSource.onmessage = (event) => {
+
+        window.facesEventSource.onmessage = (event) => {
             try {
                 const data = JSON.parse(event.data);
                 if (data.name) {
-                    document.getElementById('lastRecognition').textContent = new Date().toLocaleTimeString();
+                    document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
                     speakMessage(`Hi ${data.name}`);
-                    showToast(`Recognized: ${data.name}`, 'success');
+                    showToast(`Recognized: ${data.name}`, "success");
                     if (data.attendance_count !== undefined) {
-                        document.getElementById('todayAttendance').textContent = data.attendance_count;
-                    }
-                } else if (data.status) {
-                    console.log('Status update:', data.status);
-                    if (data.status === 'ping') {
-                        // Server heartbeat, no action needed
+                        document.getElementById("todayAttendance").textContent = data.attendance_count;
                     }
                 }
             } catch (error) {
-                console.error('Error parsing recognition event:', error, event.data);
+                console.error("Error parsing recognition event:", error, event.data);
             }
         };
-        
-        eventSource.onerror = (error) => {
-            console.error('SSE error:', error);
-            
-            // Close the connection
-            eventSource.close();
-            
-            // Implement exponential backoff for reconnection
-            reconnectAttempts++;
-            if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
-                const backoffDelay = Math.min(30000, reconnectDelay * Math.pow(1.5, reconnectAttempts - 1));
-                console.log(`Reconnecting SSE in ${backoffDelay/1000} seconds (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-                showToast(`Connection lost. Reconnecting in ${Math.round(backoffDelay/1000)}s...`, 'error');
-                
-                setTimeout(setupSSEListener, backoffDelay);
-            } else {
-                console.error('Maximum reconnection attempts reached');
-                showToast('Connection to server failed. Please reload the page.', 'error');
-            }
+
+        window.facesEventSource.onerror = (error) => {
+            console.error("SSE error:", error);
+            window.facesEventSource.close();  // Close SSE on error
+            setTimeout(setupSSEListener, 5000);  // Retry after 5 seconds
         };
-        
-        window.facesEventSource = eventSource;
     } catch (e) {
-        console.error('Error setting up SSE:', e);
-        showToast('Failed to connect to recognition service', 'error');
+        console.error("Error setting up SSE:", e);
+        showToast("Failed to connect to recognition service", "error");
     }
 }
+
 
 // Implement a more robust heartbeat mechanism
 function sendHeartbeat() {
@@ -962,7 +880,8 @@ window.onerror = function(message, source, lineno, colno, error) {
     return false; // Let default handler run too
 };
 
-const eventSource = new EventSource("http://localhost:8000/recognized_faces");
+const eventSource = new EventSource("/recognized_faces");
+
 
 eventSource.onmessage = function(event) {
     console.log("Received data:", event.data);
@@ -971,6 +890,32 @@ eventSource.onmessage = function(event) {
 eventSource.onerror = function(event) {
     console.error("SSE error:", event);
 };
+
+function showToast(message, type = 'success') {
+    const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+
+    if (!toast || !toastMessage) {
+        console.warn('Toast elements not found');
+        return;
+    }
+
+    if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
+
+    toastMessage.textContent = message;
+    toast.className = 'toast ' + type + ' show';
+
+    toast.hideTimeout = setTimeout(() => {
+        toast.className = 'toast ' + type;
+    }, 3000);
+}
+
+
+document.addEventListener("DOMContentLoaded", function () {
+    // Delay the first system check to reduce server load
+    setTimeout(() => checkSystemStatus(), 3000); // Delay by 3 seconds
+});
+
       </script>
 </body>
 </html>
