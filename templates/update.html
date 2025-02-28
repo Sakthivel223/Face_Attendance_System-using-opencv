@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Add New Employee -Face Recognition System</title>
+    <title>Add New Employee - Face Recognition System</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.3.0/css/all.min.css">
     <style>
         :root {
@@ -347,6 +347,15 @@
             cursor: not-allowed;
         }
 
+        .status-feedback {
+            color: var(--primary-color);
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+
         /* Media Queries */
         
         /* Large Devices (Desktops, less than 1200px) */
@@ -534,14 +543,15 @@
                 <input type="text" id="employeeName" class="form-input" placeholder="Enter full name" required>
             </div>
             
-            <div class="form-group">
+            <!-- Hidden fields for future development -->
+            <div class="form-group" style="display: none;">
                 <label class="form-label" for="employeeId">Employee ID</label>
-                <input type="text" id="employeeId" class="form-input" placeholder="Enter employee ID" required>
+                <input type="text" id="employeeId" class="form-input" placeholder="Enter employee ID">
             </div>
             
-            <div class="form-group">
+            <div class="form-group" style="display: none;">
                 <label class="form-label" for="department">Department</label>
-                <input type="text" id="department" class="form-input" placeholder="Enter department" required>
+                <input type="text" id="department" class="form-input" placeholder="Enter department">
             </div>
             
             <div class="button-panel">
@@ -555,7 +565,8 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <img src="{{ url_for('video_feed') }}" alt="Video Feed" class="video-feed">
+            <!-- Added directly loaded video feed - will be initialized when page loads -->
+            <video id="videoFeed" autoplay playsinline class="video-feed"></video>
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Starting camera...</p>
@@ -574,6 +585,7 @@
             </div>
             
             <p id="captureStatus">Ready to capture 0/10 images</p>
+            <div class="status-feedback" id="feedbackMessage"></div>
             
             <div class="button-panel">
                 <button class="btn btn-success" id="startCaptureBtn" onclick="startCapture()">
@@ -618,165 +630,259 @@
     <script>
         let employeeData = {
             name: "",
-            id: "",
-            department: ""
+            id: "N/A",
+            department: "N/A"
         };
         
         let captureCount = 0;
+        let isCaptureComplete = false;
+        let captureCheckTimer = null;
+        let cameraStream = null;
+        
+        document.addEventListener('DOMContentLoaded', function() {
+            preloadCamera();
+        });
+        
+        function preloadCamera() {
+            const constraints = {
+                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }
+            };
+            
+            navigator.mediaDevices.getUserMedia(constraints)
+                .then(stream => {
+                    cameraStream = stream;
+                    console.log("Camera preloaded successfully");
+                })
+                .catch(err => console.error("Error preloading camera:", err));
+        }
+        
+        function initializeVideoFeed() {
+            return new Promise((resolve, reject) => {
+                const videoElement = document.getElementById('videoFeed');
+                
+                if (cameraStream) {
+                    videoElement.srcObject = cameraStream;
+                    videoElement.onloadedmetadata = () => resolve("Camera initialized from preloaded stream");
+                    return;
+                }
+                
+                const constraints = {
+                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }
+                };
+                
+                navigator.mediaDevices.getUserMedia(constraints)
+                    .then(stream => {
+                        cameraStream = stream;
+                        videoElement.srcObject = stream;
+                        videoElement.onloadedmetadata = () => resolve("Camera initialized");
+                    })
+                    .catch(err => reject("Camera access error: " + err.message));
+            });
+        }
         
         function validateDetails() {
             const name = document.getElementById('employeeName').value.trim();
-            const id = document.getElementById('employeeId').value.trim();
-            const department = document.getElementById('department').value.trim();
-            
-            if (!name || !id || !department) {
-                showToast('Please fill in all fields', 'error');
+            if (!name) {
+                showToast('Please enter employee name', 'error');
                 return false;
             }
-            
-            // Store data
             employeeData.name = name;
-            employeeData.id = id;
-            employeeData.department = department;
-            
             return true;
         }
         
         function goToCapture() {
             if (!validateDetails()) return;
             
-            // Update steps
-            document.getElementById('step1').classList.remove('active');
-            document.getElementById('step1').classList.add('completed');
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            document.getElementById('step1').classList.replace('active', 'completed');
             document.getElementById('step2').classList.add('active');
-            
-            // Hide details form, show capture container
             document.getElementById('detailsForm').style.display = 'none';
             document.getElementById('captureContainer').style.display = 'block';
             document.getElementById('captureForm').style.display = 'block';
+            
+            let cameraInitTimeout = setTimeout(() => {
+                document.getElementById('loadingOverlay').style.display = 'none';
+                showToast('Camera initialization taking longer than expected...', 'error');
+            }, 5000);
+            
+            initializeVideoFeed()
+                .then(message => {
+                    clearTimeout(cameraInitTimeout);
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                    showToast('Camera initialized successfully', 'success');
+                })
+                .catch(error => {
+                    clearTimeout(cameraInitTimeout);
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                    showToast('Failed to initialize camera: ' + error, 'error');
+                    backToDetails();
+                });
         }
         
         function backToDetails() {
-            // Update steps
-            document.getElementById('step2').classList.remove('active');
-            document.getElementById('step1').classList.remove('completed');
-            document.getElementById('step1').classList.add('active');
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                cameraStream = null;
+            }
+            if (captureCheckTimer) clearInterval(captureCheckTimer);
             
-            // Hide capture container, show details form
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step1').classList.replace('completed', 'active');
             document.getElementById('captureContainer').style.display = 'none';
             document.getElementById('captureForm').style.display = 'none';
             document.getElementById('detailsForm').style.display = 'block';
+            captureCount = 0;
+            isCaptureComplete = false;
         }
         
         function startCapture() {
-            // Show loading overlay
             document.getElementById('loadingOverlay').style.display = 'flex';
-            document.getElementById('startCaptureBtn').disabled = true;
-            document.getElementById('startCaptureBtn').classList.add('disabled');
+            const startBtn = document.getElementById('startCaptureBtn');
+            startBtn.disabled = true;
+            startBtn.classList.add('disabled');
             
-            // Start the capture process
+            if (!employeeData.name) {
+                showToast('Employee name is required', 'error');
+                document.getElementById('loadingOverlay').style.display = 'none';
+                startBtn.disabled = false;
+                startBtn.classList.remove('disabled');
+                return;
+            }
+            
             fetch('/start_capture', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    username: employeeData.name
-                })
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: employeeData.name })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) throw new Error(`Server returned ${response.status}`);
+                return response.json();
+            })
             .then(data => {
-                // Hide loading overlay
                 document.getElementById('loadingOverlay').style.display = 'none';
-                
                 if (data.success) {
                     showToast('Capture started. Please look at the camera', 'success');
-                    
-                    // Start monitoring capture progress
+                    document.getElementById('feedbackMessage').textContent = 'Capturing images...';
                     captureCount = 0;
                     updateCaptureProgress();
                     monitorCaptureProgress();
                 } else {
-                    showToast('Failed to start capture: ' + data.status, 'error');
-                    document.getElementById('startCaptureBtn').disabled = false;
-                    document.getElementById('startCaptureBtn').classList.remove('disabled');
+                    throw new Error(data.message || 'Unknown error');
                 }
             })
             .catch(error => {
-                // Hide loading overlay
                 document.getElementById('loadingOverlay').style.display = 'none';
                 console.error('Error:', error);
-                showToast('Error connecting to server', 'error');
-                document.getElementById('startCaptureBtn').disabled = false;
-                document.getElementById('startCaptureBtn').classList.remove('disabled');
+                showToast('Error connecting to server: ' + error.message, 'error');
+                startBtn.disabled = false;
+                startBtn.classList.remove('disabled');
             });
         }
         
         function updateCaptureProgress() {
             const progressBar = document.getElementById('captureProgress');
             const progressText = document.getElementById('captureStatus');
-            
             const percentage = (captureCount / 10) * 100;
             progressBar.style.width = percentage + '%';
             progressText.textContent = `Capturing ${captureCount}/10 images`;
         }
         
         function monitorCaptureProgress() {
-            // This is a simulation since we don't have a real-time API to check progress
-            // In a real application, you would poll an API or use WebSockets
-            const checkInterval = setInterval(() => {
-                // Increment capture count (this would normally come from the server)
-                captureCount++;
-                updateCaptureProgress();
-                
-                if (captureCount >= 10) {
-                    clearInterval(checkInterval);
-                    completeCapture();
+            captureCheckTimer = setInterval(() => {
+                fetch('/capture_status')
+                    .then(response => response.json())
+                    .then(data => {
+                        captureCount = data.captured_images || captureCount;
+                        updateCaptureProgress();
+                        
+                        if (data.status === 'complete' || data.captured_images >= 10) {
+                            clearInterval(captureCheckTimer);
+                            verifyDatasetAndComplete();
+                        } else if (data.status === 'error') {
+                            clearInterval(captureCheckTimer);
+                            showToast('Capture error: ' + data.message, 'error');
+                            document.getElementById('startCaptureBtn').disabled = false;
+                            document.getElementById('startCaptureBtn').classList.remove('disabled');
+                        }
+                    })
+                    .catch(error => {
+                        document.getElementById('feedbackMessage').textContent = 'Status check error, retrying...';
+                    });
+            }, 1000);
+            
+            setTimeout(() => {
+                if (captureCheckTimer && !isCaptureComplete) {
+                    clearInterval(captureCheckTimer);
+                    if (captureCount > 0) {
+                        verifyDatasetAndComplete();
+                    } else {
+                        showToast('Capture timed out. Please try again.', 'error');
+                        document.getElementById('startCaptureBtn').disabled = false;
+                        document.getElementById('startCaptureBtn').classList.remove('disabled');
+                    }
                 }
-            }, 1500); // Check every 1.5 seconds
+            }, 30000);
+        }
+        
+        function verifyDatasetAndComplete() {
+            fetch('/verify_dataset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username: employeeData.name })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Dataset verified successfully!', 'success');
+                    completeCapture();
+                } else {
+                    showToast('Verification failed: ' + data.message, 'error');
+                    document.getElementById('startCaptureBtn').disabled = false;
+                    document.getElementById('startCaptureBtn').classList.remove('disabled');
+                }
+            })
+            .catch(error => {
+                console.error('Error verifying dataset:', error);
+                completeCapture();
+            });
         }
         
         function completeCapture() {
-            // Update steps
-            document.getElementById('step2').classList.remove('active');
-            document.getElementById('step2').classList.add('completed');
-            document.getElementById('step3').classList.add('active');
+            isCaptureComplete = true;
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                cameraStream = null;
+            }
             
-            // Hide capture container and form, show complete form
+            document.getElementById('step2').classList.replace('active', 'completed');
+            document.getElementById('step3').classList.add('active');
             document.getElementById('captureContainer').style.display = 'none';
             document.getElementById('captureForm').style.display = 'none';
             document.getElementById('completeForm').style.display = 'block';
+            document.getElementById('employeeDetails').textContent = `Name: ${employeeData.name}`;
             
-            // Update employee details in the complete form
-            document.getElementById('employeeDetails').textContent = 
-                `Name: ${employeeData.name} | ID: ${employeeData.id} | Department: ${employeeData.department}`;
-            
-            showToast('Registration completed successfully!', 'success');
+            fetch('/register_employee', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(employeeData)
+            })
+            .catch(error => console.error('Error in final registration:', error));
         }
         
         function resetForm() {
-            // Reset all form fields
             document.getElementById('employeeName').value = '';
-            document.getElementById('employeeId').value = '';
-            document.getElementById('department').value = '';
-            
-            // Reset capture progress
             document.getElementById('captureProgress').style.width = '0%';
             document.getElementById('captureStatus').textContent = 'Ready to capture 0/10 images';
-            document.getElementById('startCaptureBtn').disabled = false;
-            document.getElementById('startCaptureBtn').classList.remove('disabled');
-            
-            // Reset steps
-            document.getElementById('step1').classList.add('active');
-            document.getElementById('step1').classList.remove('completed');
-            document.getElementById('step2').classList.remove('active');
-            document.getElementById('step2').classList.remove('completed');
+            captureCount = 0;
+            isCaptureComplete = false;
+            document.getElementById('feedbackMessage').textContent = '';
+            const startBtn = document.getElementById('startCaptureBtn');
+            startBtn.disabled = false;
+            startBtn.classList.remove('disabled');
             document.getElementById('step3').classList.remove('active');
-            
-            // Show details form, hide others
+            document.getElementById('step2').classList.remove('completed');
+            document.getElementById('step1').classList.add('active');
             document.getElementById('detailsForm').style.display = 'block';
-            document.getElementById('captureContainer').style.display = 'none';
-            document.getElementById('captureForm').style.display = 'none';
             document.getElementById('completeForm').style.display = 'none';
         }
         
@@ -784,15 +890,13 @@
             const toast = document.getElementById('toast');
             const toastMessage = document.getElementById('toastMessage');
             
-            // Set message and type
             toastMessage.textContent = message;
             toast.className = 'toast ' + type + ' show';
             
-            // Auto hide after 3 seconds
             setTimeout(() => {
-                toast.className = 'toast ' + type;
+                toast.classList.remove('show');
             }, 3000);
         }
-    </script>
+        </script>
 </body>
 </html>

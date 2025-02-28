@@ -7,12 +7,14 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.3.0/css/all.min.css">
     <style>
         :root {
-            --primary-color: #2c3e50;
-            --secondary-color: #3498db;
-            --success-color: #2ecc71;
-            --danger-color: #e74c3c;
+            --primary-color: #1a3a5f;
+            --secondary-color: #2980b9;
+            --success-color: #27ae60;
+            --danger-color: #c0392b;
             --light-color: #ecf0f1;
-            --dark-color: #34495e;
+            --dark-color: #2c3e50;
+            --border-radius: 8px;
+            --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
         
         * {
@@ -23,7 +25,7 @@
         }
         
         body {
-            background-color: #f5f5f5;
+            background-color: #f8f9fa;
             color: #333;
             line-height: 1.6;
         }
@@ -35,16 +37,17 @@
         }
         
         header {
-            background-color: var(--primary-color);
+            background: linear-gradient(135deg, var(--primary-color), var(--dark-color));
             color: white;
-            padding: 20px 0;
+            padding: 25px 0;
             text-align: center;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: var(--box-shadow);
         }
         
         .main-title {
-            font-size: 2rem;
+            font-size: 2.2rem;
             margin-bottom: 10px;
+            font-weight: 600;
         }
         
         .sub-title {
@@ -57,7 +60,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            padding: 20px 0;
+            padding: 30px 0;
         }
         
         .video-container {
@@ -66,10 +69,11 @@
             height: 600px;
             margin: 20px 0;
             background-color: #000;
-            border-radius: 8px;
+            border-radius: var(--border-radius);
             overflow: hidden;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            box-shadow: var(--box-shadow);
             position: relative;
+            border: 1px solid rgba(0,0,0,0.1);
         }
         
         .video-feed {
@@ -78,19 +82,53 @@
             object-fit: cover;
         }
         
-        .status-panel {
+        .panel {
             background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
             margin: 20px 0;
             width: 100%;
             max-width: 800px;
+            border: 1px solid rgba(0,0,0,0.05);
+            transition: transform 0.3s ease;
+        }
+        
+        .panel:hover {
+            transform: translateY(-5px);
+        }
+        
+        .panel h2 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
         }
         
         .status-active {
             color: var(--success-color);
             font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+        }
+        
+        .status-active::before {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            background-color: var(--success-color);
+            border-radius: 50%;
+            margin-right: 5px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
         }
         
         .status-inactive {
@@ -100,8 +138,8 @@
         
         .button-panel {
             display: flex;
-            gap: 10px;
-            margin: 20px 0;
+            gap: 15px;
+            margin: 25px 0;
             flex-wrap: wrap;
             justify-content: center;
         }
@@ -109,14 +147,15 @@
         .btn {
             padding: 12px 24px;
             border: none;
-            border-radius: 4px;
+            border-radius: var(--border-radius);
             cursor: pointer;
             font-size: 1rem;
-            font-weight: bold;
+            font-weight: 600;
             transition: all 0.3s ease;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
+            box-shadow: var(--box-shadow);
         }
         
         .btn-primary {
@@ -134,25 +173,25 @@
             color: white;
         }
         
-        .btn-info {
-            background-color: var(--primary-color);
-            color: white;
-        }
-        
         .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            transform: translateY(-3px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
         }
         
         .btn:active {
-            transform: translateY(0);
+            transform: translateY(-1px);
+        }
+        
+        .btn:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
         }
         
         footer {
-            background-color: var(--primary-color);
+            background: linear-gradient(135deg, var(--dark-color), var(--primary-color));
             color: white;
             text-align: center;
-            padding: 20px 0;
+            padding: 25px 0;
             margin-top: 40px;
         }
         
@@ -194,19 +233,47 @@
             background-color: white;
             color: #333;
             padding: 15px 20px;
-            border-radius: 4px;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            border-radius: var(--border-radius);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
             z-index: 1000;
             transform: translateX(150%);
             transition: transform 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
         
         .toast.success {
             border-left: 4px solid var(--success-color);
         }
         
+        .toast.success::before {
+            content: '\f058';
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            color: var(--success-color);
+        }
+        
         .toast.error {
             border-left: 4px solid var(--danger-color);
+        }
+        
+        .toast.error::before {
+            content: '\f057';
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            color: var(--danger-color);
+        }
+        
+        .toast.info {
+            border-left: 4px solid var(--secondary-color);
+        }
+        
+        .toast.info::before {
+            content: '\f05a';
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            color: var(--secondary-color);
         }
         
         .toast.show {
@@ -215,12 +282,13 @@
         
         .stats-panel {
             background-color: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
             margin: 20px 0;
             width: 100%;
             max-width: 800px;
+            border: 1px solid rgba(0,0,0,0.05);
         }
         
         .stats-grid {
@@ -231,21 +299,37 @@
         }
         
         .stat-card {
-            background-color: var(--light-color);
-            padding: 15px;
-            border-radius: 4px;
+            background: linear-gradient(145deg, #f8f9fa, #e9ecef);
+            padding: 20px;
+            border-radius: var(--border-radius);
             text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            transition: transform 0.3s ease;
+            border: 1px solid rgba(0,0,0,0.05);
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
         }
         
         .stat-value {
-            font-size: 1.8rem;
+            font-size: 2rem;
             font-weight: bold;
             color: var(--primary-color);
+            margin-bottom: 5px;
         }
         
         .stat-label {
             font-size: 0.9rem;
             color: var(--dark-color);
+            font-weight: 500;
+        }
+        
+        .stat-icon {
+            font-size: 1.5rem;
+            color: var(--secondary-color);
+            margin-bottom: 10px;
         }
         
         /* Media Queries for Responsive Design */
@@ -305,7 +389,7 @@
                 grid-template-columns: 1fr;
             }
             
-            .status-panel, .stats-panel {
+            .panel, .stats-panel {
                 padding: 15px;
             }
             
@@ -321,21 +405,22 @@
     <header>
         <div class="container">
             <h1 class="main-title">Face Recognition System</h1>
-            <p class="sub-title">Employee Attendance & Access Control</p>
+            <p class="sub-title">Secure Access Control & Attendance Management</p>
         </div>
     </header>
     
     <div class="container content">
         <div class="video-container">
-            <img id="videoFeed" alt="Video Feed" class="video-feed">
+<video id="videoFeed" class="video-feed" autoplay playsinline></video>
+
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
-                <p>Starting camera...</p>
+                <p>Initializing camera...</p>
             </div>
         </div>
         
-        <div class="status-panel">
-            <h2><i class="fas fa-info-circle"></i> System Status</h2>
+        <div class="panel">
+            <h2><i class="fas fa-shield-alt"></i> System Status</h2>
             <p>Recognition Status: <span id="status" class="status-inactive">Stopped</span></p>
             <p>Last recognition: <span id="lastRecognition">None</span></p>
         </div>
@@ -348,25 +433,25 @@
                 <i class="fas fa-stop"></i> Stop Recognition
             </button>
             <button class="btn btn-primary" onclick="window.location.href='/update'">
-                <i class="fas fa-user-plus"></i> Add New Employee
-            </button>
-            <button class="btn btn-info" onclick="window.location.href='/logs'">
-                <i class="fas fa-clipboard-list"></i> View Attendance Logs
+                <i class="fas fa-user-plus"></i> Register New Employee
             </button>
         </div>
         
         <div class="stats-panel">
-            <h2><i class="fas fa-chart-bar"></i> System Statistics</h2>
+            <h2><i class="fas fa-chart-line"></i> System Overview</h2>
             <div class="stats-grid">
                 <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-users"></i></div>
                     <div class="stat-value" id="totalEmployees">0</div>
                     <div class="stat-label">Registered Employees</div>
                 </div>
                 <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-user-check"></i></div>
                     <div class="stat-value" id="todayAttendance">0</div>
                     <div class="stat-label">Today's Attendance</div>
                 </div>
                 <div class="stat-card">
+                    <div class="stat-icon"><i class="fas fa-clock"></i></div>
                     <div class="stat-value" id="systemUptime">0h</div>
                     <div class="stat-label">System Uptime</div>
                 </div>
@@ -380,216 +465,512 @@
     
     <footer>
         <div class="container">
-            <p>&copy; 2025 Face Recognition System | All Rights Reserved</p>
+            <p>&copy; 2025 Face Recognition System | Secure • Reliable • Fast</p>
         </div>
     </footer>
     
     <script>
-        // System start time (for uptime calculation)
-        const startTime = new Date();
-        let recognitionActive = false;
-        let cameraInitialized = false;
-        
-        // Initialize when document is loaded
-        document.addEventListener('DOMContentLoaded', function() {
-            // Update uptime every minute
-            setInterval(() => {
-                const now = new Date();
-                const uptimeHours = Math.floor((now - startTime) / (1000 * 60 * 60));
-                document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
-            }, 60000);
+// System start time (for uptime calculation)
+const startTime = new Date();
+let recognitionActive = false;
+let cameraInitialized = false;
+let mediaStream = null; // To store the camera stream
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let reconnectDelay = 5000; // Start with 5 seconds, will increase with backoff
+
+// Initialize the Web Speech API
+const synth = window.speechSynthesis;
+let isSpeaking = false;
+
+// Function to speak a message
+function speakMessage(message) {
+    if (isSpeaking) return; // Avoid overlapping speech
+    
+    // Wait for voices to be loaded
+    let voices = synth.getVoices();
+    if (voices.length === 0) {
+        // If voices aren't loaded yet, wait a bit and try again
+        setTimeout(() => speakMessage(message), 100);
+        return;
+    }
+    
+    const utterance = new SpeechSynthesisUtterance(message);
+    // Find preferred voice or fallback to default
+    const preferredVoice = voices.find(voice => voice.name === "Google UK English Male");
+    if (preferredVoice) {
+        utterance.voice = preferredVoice;
+    }
+    
+    utterance.onend = () => isSpeaking = false;
+    isSpeaking = true;
+    synth.speak(utterance);
+}
+
+// Connect to the video feed
+const videoFeed = document.getElementById("videoFeed");
+const loadingOverlay = document.getElementById("loadingOverlay");
+
+// Initialize when document is loaded
+document.addEventListener('DOMContentLoaded', function () {
+    // Update uptime every minute
+    setInterval(updateUptime, 60000);
+    updateUptime(); // Call immediately to show initial uptime
+    
+    // Load initial stats
+    loadSystemStats();
+    
+    // Check system status
+    checkSystemStatus();
+    
+    // Set up button event listeners
+    document.getElementById('startBtn').addEventListener('click', startRecognition);
+    document.getElementById('stopBtn').addEventListener('click', stopRecognition);
+    
+    // Set up the register new employee button
+    const registerBtn = document.querySelector('button[onclick="window.location.href=\'/update\'"]');
+    if (registerBtn) {
+        registerBtn.onclick = null; // Remove the inline handler
+        registerBtn.addEventListener('click', function() {
+            showToast('Navigating to registration page...', 'info');
             
-            // Load initial stats
-            loadSystemStats();
-            
-            // Pre-initialize the video feed with a placeholder
-            const videoFeed = document.getElementById('videoFeed');
-            videoFeed.src = '/api/placeholder';
-        });
-        
-        function loadSystemStats() {
-            // Show loading toast
-            showToast('Loading system data...', 'info');
-            
-            // Fetch registered employees count
-            fetch('/get_known_users')
+            // First check if the page exists
+            fetch('/update', { method: 'HEAD' })
                 .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    if (data.success) {
-                        document.getElementById('totalEmployees').textContent = data.users.length;
-                        
-                        // Also fetch today's attendance
-                        fetch('/get_today_attendance')
-                            .then(response => response.json())
-                            .then(attendanceData => {
-                                if (attendanceData.success) {
-                                    document.getElementById('todayAttendance').textContent = attendanceData.count;
-                                }
-                            })
-                            .catch(error => console.warn('Error fetching attendance:', error));
-                    }
-                })
-                .catch(error => {
-                    console.error('Error fetching users:', error);
-                    showToast('Error loading system data. Retrying...', 'error');
-                    
-                    // Retry after a delay
-                    setTimeout(loadSystemStats, 3000);
-                });
-        }
-        
-        function initializeCamera() {
-            if (cameraInitialized) return Promise.resolve();
-            
-            return new Promise((resolve, reject) => {
-                const videoFeed = document.getElementById('videoFeed');
-                
-                // Set the source for the video feed
-                videoFeed.src = '/video_feed';
-                
-                // Add event listener for when the image loads
-                videoFeed.onload = function() {
-                    cameraInitialized = true;
-                    resolve();
-                };
-                
-                videoFeed.onerror = function() {
-                    reject(new Error('Failed to initialize camera'));
-                };
-                
-                // Set a timeout in case the camera takes too long
-                setTimeout(() => {
-                    if (!cameraInitialized) {
-                        reject(new Error('Camera initialization timed out'));
-                    }
-                }, 10000); // 10 second timeout
-            });
-        }
-        
-        function startRecognition() {
-            if (recognitionActive) {
-                showToast('Recognition is already running', 'info');
-                return;
-            }
-            
-            // Show loading overlay
-            document.getElementById('loadingOverlay').style.display = 'flex';
-            
-            // Disable the start button to prevent multiple clicks
-            document.getElementById('startBtn').disabled = true;
-            
-            // First initialize the camera
-            initializeCamera()
-                .then(() => {
-                    // Now start recognition
-                    return fetch('/start_recognition', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            timestamp: new Date().toISOString() // Add timestamp to prevent caching
-                        })
-                    });
-                })
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Network response was not ok');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    // Hide loading overlay
-                    document.getElementById('loadingOverlay').style.display = 'none';
-                    
-                    if (data.success) {
-                        recognitionActive = true;
-                        document.getElementById('status').textContent = 'Running';
-                        document.getElementById('status').className = 'status-active';
-                        
-                        // Update last recognition time
-                        document.getElementById('lastRecognition').textContent = new Date().toLocaleTimeString();
-                        
-                        // Show success toast
-                        showToast('Recognition system started successfully!', 'success');
+                    if (response.ok) {
+                        window.location.href = '/update';
                     } else {
-                        showToast('Failed to start recognition: ' + data.status, 'error');
+                        throw new Error(`Page not found (${response.status})`);
                     }
                 })
                 .catch(error => {
-                    // Hide loading overlay
-                    document.getElementById('loadingOverlay').style.display = 'none';
-                    console.error('Error:', error);
-                    showToast('Error connecting to server: ' + error.message, 'error');
-                })
-                .finally(() => {
-                    // Re-enable the start button
-                    document.getElementById('startBtn').disabled = false;
+                    console.error('Navigation error:', error);
+                    showToast('Error: Registration page not available. Please check the server.', 'error');
                 });
+            
+            return false; // Prevent default action
+        });
+    }
+    
+    // Set up SSE listener for recognized faces
+    setupSSEListener();
+});
+
+function updateUptime() {
+    const now = new Date();
+    const uptimeHours = Math.floor((now - startTime) / (1000 * 60 * 60));
+    document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
+}
+
+function checkSystemStatus() {
+    showToast('Checking system status...', 'info');
+    
+    fetch('/check_status')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Server returned ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data && data.success) {
+                recognitionActive = data.recognition_active;
+                updateStatusDisplay();
+                
+                if (recognitionActive && !cameraInitialized) {
+                    initializeCamera()
+                        .catch(error => {
+                            console.error('Camera init error:', error);
+                            showToast('Failed to initialize camera: ' + error.message, 'error');
+                        });
+                }
+            } else {
+                throw new Error((data && data.status) || 'Unknown status error');
+            }
+        })
+        .catch(error => {
+            console.warn('Error checking system status:', error);
+            showToast('Error checking system status. Retrying in 5 seconds...', 'error');
+            setTimeout(checkSystemStatus, 5000);
+        });
+}
+
+function updateStatusDisplay() {
+    const statusElement = document.getElementById('status');
+    if (recognitionActive) {
+        statusElement.textContent = 'Running';
+        statusElement.className = 'status-active';
+    } else {
+        statusElement.textContent = 'Stopped';
+        statusElement.className = 'status-inactive';
+    }
+}
+
+function loadSystemStats() {
+    showToast('Loading system data...', 'info');
+    
+    // Use Promise.allSettled to handle multiple fetch requests
+    Promise.allSettled([
+        fetch('/get_known_users').then(response => {
+            if (!response.ok) throw new Error(`Server returned ${response.status} for get_known_users`);
+            return response.json();
+        }),
+        fetch('/get_today_attendance').then(response => {
+            if (!response.ok) throw new Error(`Server returned ${response.status} for get_today_attendance`);
+            return response.json();
+        })
+    ])
+    .then(results => {
+        // Handle users data
+        if (results[0].status === 'fulfilled' && results[0].value.success) {
+            document.getElementById('totalEmployees').textContent = results[0].value.users.length;
+        } else {
+            console.warn('Failed to load known users:', 
+                results[0].status === 'rejected' ? results[0].reason : 'API reported failure');
+            document.getElementById('totalEmployees').textContent = '?';
         }
         
-        function stopRecognition() {
-            if (!recognitionActive) {
-                showToast('Recognition is already stopped', 'info');
-                return;
+        // Handle attendance data
+        if (results[1].status === 'fulfilled' && results[1].value.success) {
+            document.getElementById('todayAttendance').textContent = results[1].value.count;
+        } else {
+            console.warn('Failed to load attendance:', 
+                results[1].status === 'rejected' ? results[1].reason : 'API reported failure');
+            document.getElementById('todayAttendance').textContent = '?';
+        }
+        
+        // Show success toast if at least one request succeeded
+        if (results.some(r => r.status === 'fulfilled')) {
+            showToast('System data loaded', 'success');
+        } else {
+            showToast('Error loading system data. Will retry shortly.', 'error');
+            setTimeout(loadSystemStats, 5000);
+        }
+    });
+}
+
+function initializeCamera() {
+    return new Promise((resolve, reject) => {
+        if (cameraInitialized && mediaStream) {
+            resolve(mediaStream);
+            return;
+        }
+
+        if (mediaStream) {
+            mediaStream.getTracks().forEach(track => track.stop());
+            videoFeed.srcObject = null;
+        }
+
+        const constraints = {
+            video: {
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 15 }
             }
-            
-            // Disable the stop button to prevent multiple clicks
-            document.getElementById('stopBtn').disabled = true;
-            
-            fetch('/stop_recognition', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    timestamp: new Date().toISOString() // Add timestamp to prevent caching
-                })
+        };
+
+        // Display the loading overlay
+        if (loadingOverlay) {
+            loadingOverlay.style.display = 'flex';
+            loadingOverlay.querySelector('p').textContent = 'Initializing camera...';
+        }
+
+        navigator.mediaDevices.getUserMedia(constraints)
+            .then(stream => {
+                mediaStream = stream;
+                videoFeed.srcObject = stream;
+                videoFeed.muted = true;
+                return new Promise(resolve => {
+                    videoFeed.onloadedmetadata = () => {
+                        resolve(videoFeed.play());
+                    };
+                    // Fallback if the onloadedmetadata event doesn't fire
+                    setTimeout(resolve, 1000);
+                });
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('Network response was not ok');
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.success) {
-                    recognitionActive = false;
-                    document.getElementById('status').textContent = 'Stopped';
-                    document.getElementById('status').className = 'status-inactive';
-                    showToast('Recognition system stopped', 'success');
-                } else {
-                    showToast('Failed to stop recognition', 'error');
-                }
+            .then(() => {
+                cameraInitialized = true;
+                if (loadingOverlay) loadingOverlay.style.display = 'none';
+                resolve();
             })
             .catch(error => {
-                console.error('Error:', error);
-                showToast('Error connecting to server: ' + error.message, 'error');
-            })
-            .finally(() => {
-                // Re-enable the stop button
-                document.getElementById('stopBtn').disabled = false;
+                if (loadingOverlay) loadingOverlay.style.display = 'none';
+                console.error('Camera initialization error:', error);
+                reject(error);
             });
+    });
+}
+
+function stopCamera() {
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+        cameraInitialized = false;
+        if (videoFeed) {
+            videoFeed.srcObject = null;
+            videoFeed.removeAttribute('src');
+            
+            // Try-catch to handle potential errors when running load() on video element
+            try {
+                videoFeed.load();
+            } catch (e) {
+                console.warn('Error calling load() on video element:', e);
+            }
         }
+    }
+}
+
+function startRecognition() {
+    if (recognitionActive) {
+        showToast('Recognition is already running', 'info');
+        return;
+    }
+    
+    loadingOverlay.style.display = 'flex';
+    loadingOverlay.querySelector('p').textContent = 'Starting recognition...';
+    document.getElementById('startBtn').disabled = true;
+    
+    // First, make sure the camera is initialized
+    initializeCamera()
+        .then(() => {
+            // Then start recognition on the server
+            return fetch('/start_recognition', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ timestamp: new Date().toISOString() })
+            });
+        })
+        .then(response => {
+            if (!response.ok) {
+                const contentType = response.headers.get("content-type");
+                if (contentType && contentType.indexOf("application/json") !== -1) {
+                    return response.json().then(data => {
+                        throw new Error(data.status || `Server returned ${response.status}`);
+                    });
+                }
+                throw new Error(`Server returned ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            loadingOverlay.style.display = 'none';
+            if (data && data.success) {
+                recognitionActive = true;
+                updateStatusDisplay();
+                document.getElementById('lastRecognition').textContent = new Date().toLocaleTimeString();
+                showToast('Recognition system started successfully!', 'success');
+                speakMessage('Face recognition system activated');
+                
+                // Make sure SSE is connected
+                if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
+                    setupSSEListener();
+                }
+            } else {
+                throw new Error((data && data.status) || 'Unknown error starting recognition');
+            }
+        })
+        .catch(error => {
+            loadingOverlay.style.display = 'none';
+            console.error('Error starting recognition:', error);
+            showToast('Error: ' + error.message, 'error');
+        })
+        .finally(() => {
+            document.getElementById('startBtn').disabled = false;
+        });
+}
+
+function stopRecognition() {
+    if (!recognitionActive) {
+        showToast('Recognition is already stopped', 'info');
+        return;
+    }
+    
+    document.getElementById('stopBtn').disabled = true;
+    loadingOverlay.style.display = 'flex';
+    loadingOverlay.querySelector('p').textContent = 'Stopping recognition...';
+    
+    fetch('/stop_recognition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ timestamp: new Date().toISOString() })
+    })
+    .then(response => {
+        if (!response.ok) {
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.indexOf("application/json") !== -1) {
+                return response.json().then(data => {
+                    throw new Error(data.status || `Server returned ${response.status}`);
+                });
+            }
+            throw new Error(`Server returned ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        loadingOverlay.style.display = 'none';
+        if (data && data.success) {
+            recognitionActive = false;
+            updateStatusDisplay();
+            stopCamera();
+            showToast('Recognition system stopped', 'success');
+            speakMessage('Face recognition system deactivated');
+        } else {
+            throw new Error((data && data.status) || 'Unknown error stopping recognition');
+        }
+    })
+    .catch(error => {
+        loadingOverlay.style.display = 'none';
+        console.error('Error stopping recognition:', error);
+        showToast('Error: ' + error.message, 'error');
+    })
+    .finally(() => {
+        document.getElementById('stopBtn').disabled = false;
+    });
+}
+
+function showToast(message, type = 'success') {
+    const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+    
+    if (!toast || !toastMessage) {
+        console.warn('Toast elements not found');
+        return;
+    }
+    
+    if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
+    
+    toastMessage.textContent = message;
+    toast.className = 'toast ' + type + ' show';
+    
+    toast.hideTimeout = setTimeout(() => {
+        toast.className = 'toast ' + type;
+    }, 3000);
+}
+
+// Event listener for recognized faces using Server-Sent Events
+function setupSSEListener() {
+    // Close existing connection if there is one
+    if (window.facesEventSource) {
+        try {
+            window.facesEventSource.close();
+        } catch (e) {
+            console.warn('Error closing existing SSE connection:', e);
+        }
+    }
+    
+    try {
+        const eventSource = new EventSource("/recognized_faces");
         
-        function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            const toastMessage = document.getElementById('toastMessage');
+        eventSource.onopen = () => {
+            console.log('SSE connection opened');
+            showToast('Connected to recognition service', 'info');
+            reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+            reconnectDelay = 5000; // Reset delay
+        };
+        
+        eventSource.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.name) {
+                    document.getElementById('lastRecognition').textContent = new Date().toLocaleTimeString();
+                    speakMessage(`Hi ${data.name}`);
+                    showToast(`Recognized: ${data.name}`, 'success');
+                    if (data.attendance_count !== undefined) {
+                        document.getElementById('todayAttendance').textContent = data.attendance_count;
+                    }
+                } else if (data.status) {
+                    console.log('Status update:', data.status);
+                    if (data.status === 'ping') {
+                        // Server heartbeat, no action needed
+                    }
+                }
+            } catch (error) {
+                console.error('Error parsing recognition event:', error, event.data);
+            }
+        };
+        
+        eventSource.onerror = (error) => {
+            console.error('SSE error:', error);
             
-            // Set message and type
-            toastMessage.textContent = message;
-            toast.className = 'toast ' + type + ' show';
+            // Close the connection
+            eventSource.close();
             
-            // Auto hide after 3 seconds
-            setTimeout(() => {
-                toast.className = 'toast ' + type;
-            }, 3000);
+            // Implement exponential backoff for reconnection
+            reconnectAttempts++;
+            if (reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+                const backoffDelay = Math.min(30000, reconnectDelay * Math.pow(1.5, reconnectAttempts - 1));
+                console.log(`Reconnecting SSE in ${backoffDelay/1000} seconds (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                showToast(`Connection lost. Reconnecting in ${Math.round(backoffDelay/1000)}s...`, 'error');
+                
+                setTimeout(setupSSEListener, backoffDelay);
+            } else {
+                console.error('Maximum reconnection attempts reached');
+                showToast('Connection to server failed. Please reload the page.', 'error');
+            }
+        };
+        
+        window.facesEventSource = eventSource;
+    } catch (e) {
+        console.error('Error setting up SSE:', e);
+        showToast('Failed to connect to recognition service', 'error');
+    }
+}
+
+// Implement a more robust heartbeat mechanism
+function sendHeartbeat() {
+    fetch('/ping')
+        .then(response => {
+            if (!response.ok) throw new Error(`Server returned ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            console.log('Heartbeat successful:', data);
+            // Reset any error counters if needed
+        })
+        .catch(error => {
+            console.warn('Server heartbeat failed:', error);
+            // Handle heartbeat failure - maybe try to reconnect SSE
+            if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
+                setupSSEListener();
+            }
+        });
+}
+
+// Send heartbeat every 30 seconds
+setInterval(sendHeartbeat, 30000);
+
+// Add window event listeners to handle page visibility changes
+document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+        console.log('Page became visible - refreshing connection');
+        // Page is visible again, refresh data and connections
+        checkSystemStatus();
+        loadSystemStats();
+        if (recognitionActive && !cameraInitialized) {
+            initializeCamera().catch(err => console.error('Camera init error:', err));
         }
-    </script>
+        if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
+            setupSSEListener();
+        }
+    }
+});
+
+// Add window error handler to catch and report JavaScript errors
+window.onerror = function(message, source, lineno, colno, error) {
+    console.error(`Error: ${message} at ${source}:${lineno}:${colno}`, error);
+    showToast(`JavaScript error: ${message}`, 'error');
+    return false; // Let default handler run too
+};
+
+const eventSource = new EventSource("http://localhost:8000/recognized_faces");
+
+eventSource.onmessage = function(event) {
+    console.log("Received data:", event.data);
+};
+
+eventSource.onerror = function(event) {
+    console.error("SSE error:", event);
+};
+      </script>
 </body>
 </html>

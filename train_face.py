@@ -7,8 +7,10 @@ KNOWN_FACES_FILE = "known_faces.json"
 
 DATASET_FOLDER = "Dataset"
 
-def train_faces():
-    """Train faces from images in the dataset folder and store encodings locally."""
+def train_faces(username):
+    """Train faces from images in the specified user's folder and store encodings locally."""
+    person_folder = os.path.join(DATASET_FOLDER, username)
+
 
     known_faces = {}
     
@@ -16,25 +18,23 @@ def train_faces():
         print(f"Error: Folder '{DATASET_FOLDER}' not found.")
         return
     
-    for person_name in os.listdir(DATASET_FOLDER):
-        person_folder = os.path.join(DATASET_FOLDER, person_name)
-        if not os.path.isdir(person_folder):
-            continue
+    if not os.path.isdir(person_folder):
+        print(f"Error: Folder '{username}' not found.")
+        return
+
+    encodings = []
+    for filename in os.listdir(person_folder):
+
         
-        encodings = []
-        for filename in os.listdir(person_folder):
-            image_path = os.path.join(person_folder, filename)
-            image = face_recognition.load_image_file(image_path)
-            face_encodings = face_recognition.face_encodings(image)
-            
-            if face_encodings:
-                encodings.append(face_encodings[0].tolist())
+        image_path = os.path.join(person_folder, filename)
+        image = face_recognition.load_image_file(image_path)
+        face_encodings = face_recognition.face_encodings(image)
         
-        if encodings:
-            known_faces[person_name] = np.mean(encodings, axis=0).tolist()
+        if face_encodings:
+            encodings.append(face_encodings[0].tolist())
     
-    # Save encodings locally
-    try:
+    if encodings:
+        known_faces[username] = np.mean(encodings, axis=0).tolist()
         with open(KNOWN_FACES_FILE, 'w') as f:
             json.dump(known_faces, f, indent=4)
         print(f"Face encodings successfully saved to {KNOWN_FACES_FILE}")
