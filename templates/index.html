@@ -522,7 +522,7 @@ document.addEventListener('DOMContentLoaded', function () {
     loadSystemStats();
 
     //stop the camera funtion when the website open
-    stopCamera();
+    stopCamera();[]
     
     // Check system status
     checkSystemStatus();
@@ -711,38 +711,26 @@ function stopCamera() {
 let recognitionStarting = false;
 
 function startRecognition() {
-    if (recognitionStarting) {
-        console.warn("⚠️ Recognition is already starting. Ignoring duplicate request.");
+    let startBtn = document.getElementById("startBtn");
+    if (startBtn.disabled) {
+        console.warn("Recognition is already starting. Ignoring duplicate request.");
         return;
     }
 
-    recognitionStarting = true;
-    showToast("Checking recognition status...", "info");
+    startBtn.disabled = true;
+    showToast("Starting recognition...", "info");
 
-    fetch('/check_status')
-    .then(response => response.json())
-    .then(data => {
-        let cameraStatusMessage;
-        if (data.camera_available === "not_initialized") {
-            cameraStatusMessage = "📷 Camera not initialized yet";
-        } else if (data.camera_available === "available") {
-            cameraStatusMessage = "✅ Camera is available";
-        } else {
-            cameraStatusMessage = "🚨 Camera not available";
-        }
-
-        // ✅ Check if element exists before setting its text
-        let cameraStatusElement = document.getElementById("cameraStatus");
-        if (cameraStatusElement) {
-            cameraStatusElement.innerText = cameraStatusMessage;
-        } else {
-            console.warn("⚠️ Element with ID 'cameraStatus' not found in the DOM.");
-        }
-
-        console.log("🔍 Camera Status:", data.camera_available);
-    })
-    .catch(error => console.error("Error checking status:", error));
-
+    fetch('/start_recognition', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            showToast(data.status, data.success ? "success" : "error");
+            if (!data.success) startBtn.disabled = false;
+        })
+        .catch(error => {
+            console.error("Error starting recognition:", error);
+            showToast("Error starting recognition!", "error");
+            startBtn.disabled = false;
+        });
 }
 
 

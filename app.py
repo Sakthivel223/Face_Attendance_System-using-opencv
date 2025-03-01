@@ -389,15 +389,10 @@ async def check_status():
     global recognition_active, camera
 
     with camera_lock:
-        if camera is None:
-            camera_status = "not_initialized"  # ✅ Differentiate between "not initialized" and "not available"
-        elif camera.isOpened():
+        camera_status = "not_initialized"
+        if camera and camera.isOpened():
             ret, _ = camera.read()
             camera_status = "available" if ret else "not_available"
-        else:
-            camera_status = "not_available"
-
-    print(f"🔍 DEBUG: Camera Status = {camera_status}, Recognition Active = {recognition_active}")
 
     return {
         "success": True,
@@ -507,32 +502,21 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %
 async def start_recognition():
     global recognition_active, recognition_thread, camera
 
-    print(f"🟢 Received request to start recognition. Current status: recognition_active={recognition_active}")
+    print(f"🟢 Request to start recognition. Current status: recognition_active={recognition_active}")
 
-    if recognition_active:
-        print("⚠️ Recognition is already running. Request ignored.")
-        return {"success": False, "status": "Recognition is already running"}
+    with camera_lock:
+        if recognition_active:
+            return {"success": False, "status": "Recognition is already running"}
 
-    try:
-        force_stop_camera()  # ✅ Ensure previous camera is stopped
+        force_stop_camera()  # Ensure previous camera instance is stopped
+        if not initialize_camera():
+            return {"success": False, "status": "Failed to initialize camera"}
 
-        camera_initialized = initialize_camera()
-        if not camera_initialized:
-            print("🚨 Camera initialization failed.")
-            return {"success": False, "status": "Camera initialization failed"}
-
-        recognition_active = True  # ✅ Mark recognition as active
+        recognition_active = True
         recognition_thread = threading.Thread(target=face_recognition_thread, daemon=True)
         recognition_thread.start()
 
-        return {"success": True, "status": "Recognition started"}
-
-    except Exception as e:
-        print(f"❌ Error starting recognition: {e}")
-        recognition_active = False  # ✅ Ensure reset on failure
-        force_stop_camera()  # ✅ Ensure camera is stopped before returning error
-        return {"success": False, "status": f"Error: {str(e)}"}
-
+    return {"success": True, "status": "Recognition started successfully"}
 
 @app.post("/stop_recognition")
 async def stop_recognition():
