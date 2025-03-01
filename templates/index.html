@@ -458,7 +458,8 @@
             </div>
         </div>
     </div>
-    
+    <p>Camera Status: <span id="cameraStatus">Unknown</span></p>
+
     <div class="toast" id="toast">
         <span id="toastMessage">Message here</span>
     </div>
@@ -519,6 +520,9 @@ document.addEventListener('DOMContentLoaded', function () {
     
     // Load initial stats
     loadSystemStats();
+
+    //stop the camera funtion when the website open
+    stopCamera();
     
     // Check system status
     checkSystemStatus();
@@ -586,15 +590,25 @@ function checkSystemStatus() {
 
 
 function updateStatusDisplay() {
-    const statusElement = document.getElementById('status');
-    if (recognitionActive) {
-        statusElement.textContent = 'Running';
-        statusElement.className = 'status-active';
-    } else {
-        statusElement.textContent = 'Stopped';
-        statusElement.className = 'status-inactive';
-    }
+    fetch('/check_status')
+        .then(response => response.json())
+        .then(data => {
+            let cameraStatusMessage;
+            if (data.camera_available === "not_initialized") {
+                cameraStatusMessage = "📷 Camera not initialized yet";
+            } else if (data.camera_available === "available") {
+                cameraStatusMessage = "✅ Camera is available";
+            } else {
+                cameraStatusMessage = "🚨 Camera not available";
+            }
+
+            document.getElementById("cameraStatus").innerText = cameraStatusMessage;
+            console.log("🔍 Camera Status:", data.camera_available);
+
+        })
+        .catch(error => console.error("Error checking status:", error));
 }
+
 
 function loadSystemStats() {
     showToast('Loading system data...', 'info');
@@ -646,8 +660,7 @@ function initializeCamera() {
             return;
         }
 
-        // Close any previous camera sessions
-        stopCamera();
+        stopCamera();  // ✅ Ensure previous camera instance is closed
 
         const constraints = { video: { width: 640, height: 480 } };
 
@@ -665,19 +678,15 @@ function initializeCamera() {
                 resolve();
             })
             .catch(error => {
-                console.error('Camera error:', error);
+                console.error("Camera error:", error);
+                if (error.name === "NotReadableError") {
+                    showToast("⚠️ Camera is already in use by another application. Please close other apps and try again.", "error");
+                } else {
+                    showToast("⚠️ Failed to start camera. Please check permissions and device settings.", "error");
+                }
                 reject(error);
             });
     });
-}
-
-function stopCamera() {
-    if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
-        mediaStream = null;
-        cameraInitialized = false;
-        videoFeed.srcObject = null;
-    }
 }
 
 function stopCamera() {
@@ -699,43 +708,41 @@ function stopCamera() {
     }
 }
 
-let recognitionStarting = false; // Prevents duplicate recognition requests
+let recognitionStarting = false;
 
 function startRecognition() {
     if (recognitionStarting) {
-        console.warn("Recognition is already starting. Ignoring duplicate request.");
+        console.warn("⚠️ Recognition is already starting. Ignoring duplicate request.");
         return;
     }
 
     recognitionStarting = true;
-    showToast('Checking recognition status...', 'info');
+    showToast("Checking recognition status...", "info");
 
     fetch('/check_status')
-        .then(response => response.json())
-        .then(data => {
-            if (data.recognition_active) {
-                showToast('Recognition is already running!', 'error');
-                recognitionStarting = false;
-                return;
-            }
+    .then(response => response.json())
+    .then(data => {
+        let cameraStatusMessage;
+        if (data.camera_available === "not_initialized") {
+            cameraStatusMessage = "📷 Camera not initialized yet";
+        } else if (data.camera_available === "available") {
+            cameraStatusMessage = "✅ Camera is available";
+        } else {
+            cameraStatusMessage = "🚨 Camera not available";
+        }
 
-            return initializeCamera()  // ✅ Only start camera when user clicks the button
-                .then(() => fetch('/start_recognition', { method: 'POST' }));
-        })
-        .then(response => response?.json())
-        .then(data => {
-            if (!data?.success) throw new Error(data?.status || 'Unknown error');
-            showToast('Recognition started successfully!', 'success');
-            recognitionActive = true;
-            updateStatusDisplay();
-        })
-        .catch(error => {
-            console.error('Error starting recognition:', error);
-            showToast('Error: ' + error.message, 'error');
-        })
-        .finally(() => {
-            recognitionStarting = false;
-        });
+        // ✅ Check if element exists before setting its text
+        let cameraStatusElement = document.getElementById("cameraStatus");
+        if (cameraStatusElement) {
+            cameraStatusElement.innerText = cameraStatusMessage;
+        } else {
+            console.warn("⚠️ Element with ID 'cameraStatus' not found in the DOM.");
+        }
+
+        console.log("🔍 Camera Status:", data.camera_available);
+    })
+    .catch(error => console.error("Error checking status:", error));
+
 }
 
 
@@ -755,15 +762,6 @@ function stopRecognition() {
             console.error('❌ Error stopping recognition:', error);
             showToast('Error: ' + error.message, 'error');
         });
-}
-
-function stopCamera() {
-    if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
-        mediaStream = null;
-        cameraInitialized = false;
-        videoFeed.srcObject = null;
-    }
 }
 
 
