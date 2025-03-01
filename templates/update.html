@@ -639,23 +639,6 @@
         let captureCheckTimer = null;
         let cameraStream = null;
         
-        document.addEventListener('DOMContentLoaded', function() {
-            preloadCamera();
-        });
-        
-        function preloadCamera() {
-            const constraints = {
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }
-            };
-            
-            navigator.mediaDevices.getUserMedia(constraints)
-                .then(stream => {
-                    cameraStream = stream;
-                    console.log("Camera preloaded successfully");
-                })
-                .catch(err => console.error("Error preloading camera:", err));
-        }
-        
         function initializeVideoFeed() {
             return new Promise((resolve, reject) => {
                 const videoElement = document.getElementById('videoFeed');
@@ -720,20 +703,18 @@
         }
         
         function backToDetails() {
-            if (cameraStream) {
-                cameraStream.getTracks().forEach(track => track.stop());
-                cameraStream = null;
-            }
-            if (captureCheckTimer) clearInterval(captureCheckTimer);
-            
-            document.getElementById('step2').classList.remove('active');
-            document.getElementById('step1').classList.replace('completed', 'active');
-            document.getElementById('captureContainer').style.display = 'none';
-            document.getElementById('captureForm').style.display = 'none';
-            document.getElementById('detailsForm').style.display = 'block';
-            captureCount = 0;
-            isCaptureComplete = false;
-        }
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop()); // ✅ Release the camera
+        cameraStream = null;
+    }
+
+    document.getElementById('step2').classList.remove('active');
+    document.getElementById('step1').classList.replace('completed', 'active');
+    document.getElementById('captureContainer').style.display = 'none';
+    document.getElementById('captureForm').style.display = 'none';
+    document.getElementById('detailsForm').style.display = 'block';
+}
+
         
         function startCapture() {
             document.getElementById('loadingOverlay').style.display = 'flex';
@@ -897,6 +878,17 @@
                 toast.classList.remove('show');
             }, 3000);
         }
+
+
+        window.addEventListener("beforeunload", function () {
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+        cameraStream = null;
+        console.log("🔴 Camera stopped before leaving the page.");
+    }
+});
+
+
         </script>
 </body>
 </html>

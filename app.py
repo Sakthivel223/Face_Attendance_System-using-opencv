@@ -146,31 +146,30 @@ def force_stop_camera():
 def initialize_camera():
     global camera
 
-    force_stop_camera()  # Ensure no other process is using the camera
+    force_stop_camera()  # Ensure previous instance is stopped
 
     try:
         with camera_lock:
-            for cam_index in [0, 1, 2]:  # Try multiple indices
-                print(f"🎥 Trying camera index {cam_index}...")
-                camera = cv2.VideoCapture(cam_index)
+            print("🎥 Attempting to initialize the camera at index 0...")
 
-                if camera.isOpened():
-                    time.sleep(2)  # Allow camera to stabilize
-                    ret, _ = camera.read()
-                    if ret:
-                        print(f"✅ Camera {cam_index} initialized successfully!")
-                        camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                        return True
+            camera = cv2.VideoCapture(0)  # ✅ Force camera to use index 0
 
-                # Close camera if it failed
-                force_stop_camera()
+            if camera.isOpened():
+                time.sleep(2)  # Allow camera to stabilize
+                ret, _ = camera.read()
+                if ret:
+                    print(f"✅ Camera initialized successfully at index 0!")
+                    camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    return True
 
-        print("🚨 All camera indices failed. Camera is not available.")
-        return False
+            print("🚨 ERROR: Camera failed to open at index 0.")
+            return False
+
     except Exception as e:
         print(f"🚨 Camera initialization error: {e}")
         return False
+
 
 # Function to run face recognition in a separate thread
 def face_recognition_thread():
@@ -406,14 +405,13 @@ async def ping():
 async def check_status():
     global recognition_active
 
-    # Ensure camera status is properly reported
     camera_status = False
     with camera_lock:
-        if camera is not None and camera.isOpened():
+        if recognition_active and camera is not None and camera.isOpened():  # ✅ Only check when recognition is running
             ret, _ = camera.read()
             camera_status = ret
 
-    logging.debug(f"Status check request received. recognition_active={recognition_active}, camera_available={camera_status}")
+    print(f"🔍 DEBUG: Camera Available = {camera_status}, Recognition Active = {recognition_active}")
 
     return {
         "success": True,
@@ -421,9 +419,6 @@ async def check_status():
         "camera_available": camera_status,
         "known_faces_count": len(known_face_names)
     }
-
-
-
 
 # Modify the recognized_faces_stream function
 @app.get("/recognized_faces")
@@ -532,25 +527,22 @@ async def start_recognition():
         return {"success": False, "status": "Recognition is already running"}
 
     try:
-        init_attendance_log()
-
-        logging.debug("🔄 Stopping any previous camera sessions before starting new recognition.")
-        
-        # Ensure camera is properly restarted
+        # Stop any previous instances
         force_stop_camera()
-        camera_initialized = initialize_camera()
 
+        # Initialize camera
+        camera_initialized = initialize_camera()
         if not camera_initialized:
             logging.error("🚨 Camera initialization failed.")
+            recognition_active = False  # ✅ Ensure this resets on failure
             return {"success": False, "status": "Camera initialization failed"}
 
         if camera is None or not camera.isOpened():
             logging.error("🚨 Camera failed to open.")
+            recognition_active = False  # ✅ Reset here as well
             return {"success": False, "status": "Camera failed to open"}
 
-        recognition_active = True  # Mark recognition as active only if camera is ready
-        logging.info("✅ Recognition marked as active. Starting recognition thread...")
-
+        recognition_active = True  # ✅ Mark recognition as active only after camera is ready
         recognition_thread = threading.Thread(target=face_recognition_thread, daemon=True)
         recognition_thread.start()
 
@@ -558,10 +550,9 @@ async def start_recognition():
 
     except Exception as e:
         logging.error(f"❌ Error starting recognition: {e}")
-        recognition_active = False
+        recognition_active = False  # ✅ Reset on exception
         force_stop_camera()  # Ensure camera is stopped before returning error
         return {"success": False, "status": f"Error: {str(e)}"}
-
 
 @app.post("/stop_recognition")
 async def stop_recognition():
@@ -574,18 +565,14 @@ async def stop_recognition():
         return {"success": False, "status": "Recognition is not running"}
 
     try:
-        recognition_active = False  # Stop recognition before stopping thread
+        recognition_active = False  # ✅ Stop recognition before stopping thread
         logging.info("Recognition marked as inactive. Stopping recognition thread...")
 
         if recognition_thread and recognition_thread.is_alive():
             recognition_thread.join(timeout=2.0)
-            recognition_thread = None  # Reset thread
+            recognition_thread = None  # ✅ Reset thread
 
-        with camera_lock:
-            if camera is not None:
-                logging.debug("Releasing camera resource...")
-                camera.release()
-                camera = None
+        force_stop_camera()  # ✅ Ensure camera is released
 
         return {"success": True, "status": "Recognition stopped"}
 

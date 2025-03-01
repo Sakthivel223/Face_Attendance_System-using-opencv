@@ -646,24 +646,10 @@ function initializeCamera() {
             return;
         }
 
-        if (mediaStream) {
-            mediaStream.getTracks().forEach(track => track.stop());
-            videoFeed.srcObject = null;
-        }
+        // Close any previous camera sessions
+        stopCamera();
 
-        const constraints = {
-            video: {
-                width: { ideal: 640 },
-                height: { ideal: 480 },
-                frameRate: { ideal: 15 }
-            }
-        };
-
-        // Display the loading overlay
-        if (loadingOverlay) {
-            loadingOverlay.style.display = 'flex';
-            loadingOverlay.querySelector('p').textContent = 'Initializing camera...';
-        }
+        const constraints = { video: { width: 640, height: 480 } };
 
         navigator.mediaDevices.getUserMedia(constraints)
             .then(stream => {
@@ -671,24 +657,27 @@ function initializeCamera() {
                 videoFeed.srcObject = stream;
                 videoFeed.muted = true;
                 return new Promise(resolve => {
-                    videoFeed.onloadedmetadata = () => {
-                        resolve(videoFeed.play());
-                    };
-                    // Fallback if the onloadedmetadata event doesn't fire
-                    setTimeout(resolve, 1000);
+                    videoFeed.onloadedmetadata = () => resolve(videoFeed.play());
                 });
             })
             .then(() => {
                 cameraInitialized = true;
-                if (loadingOverlay) loadingOverlay.style.display = 'none';
                 resolve();
             })
             .catch(error => {
-                if (loadingOverlay) loadingOverlay.style.display = 'none';
-                console.error('Camera initialization error:', error);
+                console.error('Camera error:', error);
                 reject(error);
             });
     });
+}
+
+function stopCamera() {
+    if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+        cameraInitialized = false;
+        videoFeed.srcObject = null;
+    }
 }
 
 function stopCamera() {
@@ -710,7 +699,7 @@ function stopCamera() {
     }
 }
 
-let recognitionStarting = false;
+let recognitionStarting = false; // Prevents duplicate recognition requests
 
 function startRecognition() {
     if (recognitionStarting) {
@@ -718,7 +707,7 @@ function startRecognition() {
         return;
     }
 
-    recognitionStarting = true; // Mark as starting to prevent duplicate requests
+    recognitionStarting = true;
     showToast('Checking recognition status...', 'info');
 
     fetch('/check_status')
@@ -730,23 +719,15 @@ function startRecognition() {
                 return;
             }
 
-            if (!data.camera_available) {
-                showToast('🚨 Camera is not available. Please check the device!', 'error');
-                recognitionStarting = false;
-                return;
-            }
-
-            return fetch('/start_recognition', { method: 'POST' });
+            return initializeCamera()  // ✅ Only start camera when user clicks the button
+                .then(() => fetch('/start_recognition', { method: 'POST' }));
         })
         .then(response => response?.json())
         .then(data => {
-            if (!data?.success) {
-                throw new Error(data?.status || 'Unknown error');
-            }
+            if (!data?.success) throw new Error(data?.status || 'Unknown error');
             showToast('Recognition started successfully!', 'success');
             recognitionActive = true;
             updateStatusDisplay();
-            setupSSEListener();
         })
         .catch(error => {
             console.error('Error starting recognition:', error);
@@ -914,6 +895,10 @@ function showToast(message, type = 'success') {
 document.addEventListener("DOMContentLoaded", function () {
     // Delay the first system check to reduce server load
     setTimeout(() => checkSystemStatus(), 3000); // Delay by 3 seconds
+});
+
+window.addEventListener("beforeunload", function () {
+    stopCamera();  // ✅ Stop camera when leaving the page
 });
 
       </script>
