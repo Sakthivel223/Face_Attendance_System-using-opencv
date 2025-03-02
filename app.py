@@ -1,7 +1,7 @@
 from getpass import getuser
 import logging
 from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -71,6 +71,13 @@ if not os.path.exists(FACE_DB_PATH):
 if not os.path.exists(EXCEL_LOG_PATH):
     os.makedirs(EXCEL_LOG_PATH)
     print(f"Created Excel logs directory: {EXCEL_LOG_PATH}")
+
+
+
+
+@app.get("/favicon.ico")
+async def get_favicon():
+    return FileResponse("static/favicon.ico")
 
 # Load known faces from database
 def load_known_faces():
@@ -200,7 +207,6 @@ def face_recognition_thread():
                       name = "Unknown"
 
                 face_names.append(name)
-
 
             # Draw bounding boxes
             for (top, right, bottom, left), name in zip(face_locations, face_names):
@@ -414,16 +420,15 @@ async def update(request: Request):
 async def ping():
     return {"success": True, "message": "pong"}
 
+# Update check_status endpoint
 @app.get("/check_status")
 async def check_status():
     global recognition_active, camera
-
+    camera_status = "not_initialized"
     with camera_lock:
-        camera_status = "not_initialized"
         if camera and camera.isOpened():
             ret, _ = camera.read()
             camera_status = "available" if ret else "not_available"
-
     return {
         "success": True,
         "recognition_active": recognition_active,
@@ -431,35 +436,38 @@ async def check_status():
         "known_faces_count": len(known_face_names)
     }
 
-
 # Modify the recognized_faces_stream function
 @app.get("/recognized_faces")
 async def recognized_faces_stream():
     async def event_stream():
         last_sent_index = 0
-
         yield f"data: {json.dumps({'status': 'connected'})}\n\n"
-
-        while recognition_active:
-            events = get_recognition_events()
-
-            if events and len(events) > last_sent_index:
-                for i, event in enumerate(events[last_sent_index:], start=last_sent_index):
-                    if isinstance(event, dict) and 'name' in event:
+        
+        while True:
+            try:
+                events = get_recognition_events()
+                
+                if events and len(events) > last_sent_index:
+                    for i, event in enumerate(events[last_sent_index:], start=last_sent_index):
                         safe_event = {
                             "name": str(event.get("name", "Unknown")),
                             "time": str(event.get("time", "")),
                             "attendance_count": int(event.get("attendance_count", 0))
                         }
-
                         yield f"data: {json.dumps(safe_event)}\n\n"
-                        last_sent_index = i + 1  # Update last index
-
-            yield ":keep-alive\n\n"
-            await asyncio.sleep(1.0)
+                        last_sent_index = i + 1
+                
+                # Send regular keep-alive
+                yield ":\n\n"
+                await asyncio.sleep(1)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"SSE Error: {e}")
+                await asyncio.sleep(3)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
 
 # Fixed video_feed function to better handle camera state
 @app.get("/video_feed")
@@ -519,7 +527,7 @@ async def start_recognition():
         if recognition_active:
             return {"success": False, "status": "Recognition is already running"}
 
-        force_stop_camera()  # Ensure previous camera instance is stopped
+        force_stop_camera()  # ✅ Ensure no other camera instance is running
         if not initialize_camera():
             return {"success": False, "status": "Failed to initialize camera"}
 
@@ -545,7 +553,6 @@ async def stop_recognition():
     force_stop_camera()  # Ensure camera is released
 
     return {"success": True, "status": "Recognition stopped"}
-
 
 @app.get("/get_known_users")
 async def get_known_users():

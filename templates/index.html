@@ -712,6 +712,7 @@ function startRecognition() {
                 if (data.success) {
                     recognitionActive = true;
                     updateStatusDisplay();
+                    setupSSEListener(); // ✅ Ensure live updates are enabled
                     showToast(data.status, "success");
                 } else {
                     showToast(data.status, "error");
@@ -751,52 +752,60 @@ function stopRecognition() {
         });
 }
 
-// Event listener for recognized faces using Server-Sent Events
-function setupSSEListener() {
-    // ✅ Close any existing SSE connection before opening a new one
-    if (window.facesEventSource) {
-        try {
-            window.facesEventSource.close();
-        } catch (e) {
-            console.warn("Error closing existing SSE connection:", e);
-        }
-    }
-    
-    try {
-        window.facesEventSource = new EventSource("/recognized_faces");
+function stopRecognition() {
+    let startBtn = document.getElementById("startBtn");
+    showToast('⏹ Stopping recognition...', 'info');
 
-        window.facesEventSource.onopen = () => {
-            console.log("SSE connection opened");
-            showToast("Connected to recognition service", "info");
-        };
-
-        window.facesEventSource.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.name) {
-                    document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
-                    speakMessage(`Hi ${data.name}`);
-                    showToast(`Recognized: ${data.name}`, "success");
-                    if (data.attendance_count !== undefined) {
-                        document.getElementById("todayAttendance").textContent = data.attendance_count;
-                    }
-                }
-            } catch (error) {
-                console.error("Error parsing recognition event:", error, event.data);
+    fetch('/stop_recognition', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showToast('✅ Recognition stopped successfully!', 'success');
+                recognitionActive = false;
+                startBtn.disabled = false;  // Re-enable Start button
+                stopCamera();
+            } else {
+                showToast('Error: ' + data.status, 'error');
             }
-        };
-
-        window.facesEventSource.onerror = (error) => {
-            console.error("SSE error:", error);
-            window.facesEventSource.close();  // Close SSE on error
-            setTimeout(setupSSEListener, 5000);  // Retry after 5 seconds
-        };
-    } catch (e) {
-        console.error("Error setting up SSE:", e);
-        showToast("Failed to connect to recognition service", "error");
-    }
+        })
+        .catch(error => {
+            console.error('❌ Error stopping recognition:', error);
+            showToast('Error: ' + error.message, 'error');
+        });
 }
 
+// Event listener for recognized faces using Server-Sent Events
+// Modify setupSSEListener function
+function setupSSEListener() {
+    if (window.facesEventSource) {
+        window.facesEventSource.close();
+    }
+
+    window.facesEventSource = new EventSource("/recognized_faces");
+    
+    window.facesEventSource.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.name) {
+                document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
+                speakMessage(`Hi ${data.name}`);
+                showToast(`Recognized: ${data.name}`, "success");
+                if (data.attendance_count !== undefined) {
+                    document.getElementById("todayAttendance").textContent = data.attendance_count;
+                }
+            }
+        } catch (error) {
+            console.error("Error parsing SSE event:", error);
+        }
+    });
+
+    window.facesEventSource.addEventListener('error', (error) => {
+        console.error("SSE error:", error);
+        setTimeout(() => {
+            setupSSEListener();
+        }, 5000);
+    });
+}
 
 // Implement a more robust heartbeat mechanism
 function sendHeartbeat() {
@@ -842,17 +851,6 @@ window.onerror = function(message, source, lineno, colno, error) {
     console.error(`Error: ${message} at ${source}:${lineno}:${colno}`, error);
     showToast(`JavaScript error: ${message}`, 'error');
     return false; // Let default handler run too
-};
-
-const eventSource = new EventSource("/recognized_faces");
-
-
-eventSource.onmessage = function(event) {
-    console.log("Received data:", event.data);
-};
-
-eventSource.onerror = function(event) {
-    console.error("SSE error:", event);
 };
 
 function showToast(message, type = 'success') {
