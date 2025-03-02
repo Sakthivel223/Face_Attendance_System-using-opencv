@@ -422,6 +422,7 @@
         <div class="panel">
             <h2><i class="fas fa-shield-alt"></i> System Status</h2>
             <p>Recognition Status: <span id="status" class="status-inactive">Stopped</span></p>
+            <p>Camera Status: <span id="cameraStatus">Not Initialized</span></p>
             <p>Last recognition: <span id="lastRecognition">None</span></p>
         </div>
         
@@ -458,7 +459,6 @@
             </div>
         </div>
     </div>
-    <p>Camera Status: <span id="cameraStatus">Unknown</span></p>
 
     <div class="toast" id="toast">
         <span id="toastMessage">Message here</span>
@@ -566,47 +566,75 @@ function updateUptime() {
     document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
 }
 
-function checkSystemStatus() {
-    if (window.checkingStatus) {
-        return; // Prevent duplicate requests
-    }
-    window.checkingStatus = true;
-
-    fetch("/check_status")
-        .then(response => response.json())
-        .then(data => {
-            console.log("Recognition status received:", data);
-            recognitionActive = data.recognition_active;
-            updateStatusDisplay();
-        })
-        .catch(error => {
-            console.warn("Error checking system status:", error);
-            showToast("Error checking system status. Retrying...", "error");
-        })
-        .finally(() => {
-            window.checkingStatus = false;
-        });
-}
-
-
-function updateStatusDisplay() {
+// Add this function to update status regularly
+function updateSystemStatus() {
     fetch('/check_status')
         .then(response => response.json())
         .then(data => {
-            let cameraStatusMessage;
-            if (data.camera_available === "not_initialized") {
-                cameraStatusMessage = "📷 Camera not initialized yet";
-            } else if (data.camera_available === "available") {
-                cameraStatusMessage = "✅ Camera is available";
+            const statusElement = document.getElementById('status');
+            const cameraStatusElement = document.getElementById('cameraStatus');
+            
+            // Update recognition status immediately
+            if (data.recognition_active) {
+                statusElement.innerHTML = '<span class="status-active">Active</span>';
             } else {
-                cameraStatusMessage = "🚨 Camera not available";
+                statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
+            }
+            
+            // Update camera status
+            cameraStatusElement.textContent = data.camera_available === "available" 
+                ? "✅ Camera Active" 
+                : "❌ Camera Not Available";
+        })
+        .catch(error => console.error('Status update error:', error));
+}
+
+// Run every 1 second for real-time updates
+setInterval(updateSystemStatus, 1000);
+
+
+function checkSystemStatus() {
+    fetch("/check_status")
+        .then(response => response.json())
+        .then(data => {
+            console.log("System status:", data);
+            recognitionActive = data.recognition_active;
+            updateStatusDisplay();  // Now properly defined
+        })
+        .catch(error => {
+            console.error("Status check failed:", error);
+            showToast("Connection error. Retrying...", "error");
+            setTimeout(checkSystemStatus, 3000);
+        });
+}
+function updateStatusDisplay() {
+    const statusElement = document.getElementById('status');
+    const cameraStatusElement = document.getElementById('cameraStatus');
+    const lastRecognitionElement = document.getElementById('lastRecognition');
+
+    fetch('/check_status')
+        .then(response => response.json())
+        .then(data => {
+            // Update recognition status
+            if (data.recognition_active) {
+                statusElement.innerHTML = '<span class="status-active">Active</span>';
+            } else {
+                statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
             }
 
-            document.getElementById("cameraStatus").innerText = cameraStatusMessage;
-            console.log("🔍 Camera Status:", data.camera_available);
+            // Update camera status
+            if (cameraStatusElement) {
+                cameraStatusElement.textContent = data.camera_available === "available" 
+                    ? "✅ Camera Active" 
+                    : "❌ Camera Not Available";
+            }
 
+            // Update last recognition time
+            if (lastRecognitionElement && data.last_seen) {
+                lastRecognitionElement.textContent = new Date(data.last_seen).toLocaleTimeString();
+            }
         })
-        .catch(error => console.error("Error checking status:", error));
+        .catch(error => console.error('Status update error:', error));
 }
 
 
@@ -873,9 +901,10 @@ function showToast(message, type = 'success') {
 }
 
 
-document.addEventListener("DOMContentLoaded", function () {
-    // Delay the first system check to reduce server load
-    setTimeout(() => checkSystemStatus(), 3000); // Delay by 3 seconds
+document.addEventListener('DOMContentLoaded', function () {
+    updateStatusDisplay();  // Initial status update
+    setInterval(updateStatusDisplay, 2000);  // Regular updates
+    // ... rest of your init code
 });
 
 window.addEventListener("beforeunload", function () {
