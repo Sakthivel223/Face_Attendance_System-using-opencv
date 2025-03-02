@@ -655,11 +655,6 @@ function loadSystemStats() {
 
 function initializeCamera() {
     return new Promise((resolve, reject) => {
-        if (mediaStream) {
-            resolve(mediaStream);
-            return;
-        }
-
         stopCamera();  // Ensure previous instance is stopped
 
         const constraints = { video: { width: 640, height: 480 } };
@@ -668,7 +663,6 @@ function initializeCamera() {
             .then(stream => {
                 mediaStream = stream;
                 videoFeed.srcObject = stream;
-                videoFeed.muted = true;
                 return videoFeed.play();
             })
             .then(() => {
@@ -682,7 +676,6 @@ function initializeCamera() {
             });
     });
 }
-
 
 function stopCamera() {
     if (mediaStream) {
@@ -707,39 +700,37 @@ let recognitionStarting = false;
 
 function startRecognition() {
     let startBtn = document.getElementById("startBtn");
-    if (recognitionStarting) {
-        console.warn("Recognition is already running. Ignoring duplicate request.");
-        showToast("Recognition is already running.", "info");
-        return;
-    }
+    if (startBtn.disabled) return; // Prevent multiple clicks
 
     startBtn.disabled = true;
     showToast("Starting recognition...", "info");
 
-    fetch('/start_recognition', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                recognitionActive = true;
-                updateStatusDisplay();
-                showToast(data.status, "success");
-                initializeCamera();  // Ensure the camera starts properly
-            } else {
-                startBtn.disabled = false;  // Enable the button if it fails
-                showToast(data.status, "error");
-            }
-        })
-        .catch(error => {
-            console.error("Error starting recognition:", error);
-            showToast("Error starting recognition!", "error");
-            startBtn.disabled = false;
-        });
+    initializeCamera().then(() => {
+        fetch('/start_recognition', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    recognitionActive = true;
+                    updateStatusDisplay();
+                    showToast(data.status, "success");
+                } else {
+                    showToast(data.status, "error");
+                    startBtn.disabled = false; // Re-enable on failure
+                }
+            })
+            .catch(error => {
+                console.error("Error starting recognition:", error);
+                showToast("Error starting recognition!", "error");
+                startBtn.disabled = false;
+            });
+    }).catch(() => {
+        showToast("Camera initialization failed!", "error");
+        startBtn.disabled = false;
+    });
 }
 
 function stopRecognition() {
     let startBtn = document.getElementById("startBtn");
-    let stopBtn = document.getElementById("stopBtn");
-
     showToast('⏹ Stopping recognition...', 'info');
 
     fetch('/stop_recognition', { method: 'POST' })
@@ -747,9 +738,9 @@ function stopRecognition() {
         .then(data => {
             if (data.success) {
                 showToast('✅ Recognition stopped successfully!', 'success');
-                recognitionStarting = false;  // Reset recognition status
-                startBtn.disabled = false;  // Enable start button
-                stopCamera();  // Ensure the camera stops
+                recognitionActive = false;
+                startBtn.disabled = false;  // Re-enable Start button
+                stopCamera();
             } else {
                 showToast('Error: ' + data.status, 'error');
             }
@@ -759,9 +750,6 @@ function stopRecognition() {
             showToast('Error: ' + error.message, 'error');
         });
 }
-
-
-
 
 // Event listener for recognized faces using Server-Sent Events
 function setupSSEListener() {

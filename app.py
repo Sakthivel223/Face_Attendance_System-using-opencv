@@ -19,6 +19,7 @@ from pydantic import BaseModel
 import pyttsx3
 import pandas as pd
 import asyncio
+from threading import Lock
 
 app = FastAPI()
 
@@ -34,6 +35,9 @@ known_face_encodings = []
 known_face_names = []
 attendance_log = {}
 active_sse_connections = set()
+log_lock = Lock()
+GREETING_COOLDOWN = 300  # 5 minutes cooldown per person
+recognized_users = {}
 
 # Configuration
 FACE_DB_PATH = "Dataset"
@@ -222,42 +226,68 @@ def face_recognition_thread():
 
 
 
-# Function to update Excel attendance log
-def update_excel_log(employee_name):
-    try:
-        now = datetime.datetime.now()
-        month_year = now.strftime("%B-%Y")  # e.g., "February-2025"
-        excel_file = os.path.join(EXCEL_LOG_PATH, f"{month_year}.xlsx")
+def save_to_excel(excel_file, date, name, entry_time, exit_time):
+    """ Saves or updates attendance logs in an Excel file. """
+    
+    if not os.path.exists(EXCEL_LOG_PATH):
+        os.makedirs(EXCEL_LOG_PATH)
 
-        today = datetime.date.today().isoformat()
-        current_time = datetime.datetime.now().strftime("%H:%M:%S")
-
-        # Load existing data or create new file
-        if os.path.exists(excel_file):
-            try:
-                df = pd.read_excel(excel_file, engine='openpyxl')
-            except Exception as e:
-                print(f"Error reading existing Excel file: {e}")
-                df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
-        else:
+    # Load existing file or create a new one
+    if os.path.exists(excel_file):
+        try:
+            df = pd.read_excel(excel_file, engine="openpyxl")
+        except Exception as e:
+            print(f"Error reading existing Excel file: {e}")
             df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
+    else:
+        df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
 
-        # Check if employee already logged entry today
-        existing_entry = df[(df["Date"] == today) & (df["Name"] == employee_name)]
+    # Check if the user already has an entry today
+    existing_entry = df[(df["Date"] == date) & (df["Name"] == name)]
 
-        if existing_entry.empty:
-            new_entry = pd.DataFrame({"Date": [today], "Name": [employee_name], "Entry Time": [current_time], "Exit Time": [""]})
-            df = pd.concat([df, new_entry], ignore_index=True)
-            speak_greeting(employee_name, is_exit=False)
-        else:
-            df.loc[df["Name"] == employee_name, "Exit Time"] = current_time
-            speak_greeting(employee_name, is_exit=True)
+    if existing_entry.empty:
+        # If no entry exists, add a new row
+        new_entry = pd.DataFrame({"Date": [date], "Name": [name], "Entry Time": [entry_time], "Exit Time": [""]})
+        df = pd.concat([df, new_entry], ignore_index=True)
+    else:
+        # Update exit time only if it's empty
+        df.loc[(df["Date"] == date) & (df["Name"] == name), "Exit Time"] = exit_time
 
-        df.to_excel(excel_file, index=False, engine='openpyxl')
-        print(f"✅ Updated attendance log for {employee_name}")
-
+    # Save the updated DataFrame to Excel
+    try:
+        df.to_excel(excel_file, index=False, engine="openpyxl")
+        print(f"✅ Successfully updated {excel_file}")
     except Exception as e:
-        print(f"Error updating Excel log: {e}")
+        print(f"❌ Error saving Excel file: {e}")
+
+
+# Function to update Excel attendance log
+def update_excel_log(name, is_exit=False):
+    """ Updates the Excel log with entry/exit times. """
+    global attendance_log
+    now = datetime.datetime.now()
+    today = now.date().isoformat()
+    current_time = now.strftime("%H:%M:%S")
+    month_year = now.strftime("%B-%Y")
+    excel_file = os.path.join(EXCEL_LOG_PATH, f"{month_year}.xlsx")
+
+    with log_lock:
+        if today not in attendance_log:
+            attendance_log[today] = {}
+
+        if name not in attendance_log[today]:
+            attendance_log[today][name] = {"Entry Time": current_time, "Exit Time": ""}
+            speak_greeting(name, is_exit=False)
+
+        elif is_exit and attendance_log[today][name]["Exit Time"] == "":
+            attendance_log[today][name]["Exit Time"] = current_time
+            speak_greeting(name, is_exit=True)
+
+    # ✅ Fixed function call
+    log_entry = attendance_log[today][name]
+    save_to_excel(excel_file, today, name, log_entry["Entry Time"], log_entry["Exit Time"])
+
+
 
 # Function to train faces for a specific user
 def train_faces(username: str):
@@ -406,49 +436,30 @@ async def check_status():
 @app.get("/recognized_faces")
 async def recognized_faces_stream():
     async def event_stream():
-        connection_id = id(asyncio.current_task())
-        print(f"New SSE connection established: {connection_id}")
+        last_sent_index = 0
 
-        try:
-            active_sse_connections.add(connection_id)
-            last_sent_index = 0
+        yield f"data: {json.dumps({'status': 'connected'})}\n\n"
 
-            yield f"data: {json.dumps({'status': 'connected'})}\n\n"
+        while recognition_active:
+            events = get_recognition_events()
 
-            while True:
-                try:
-                    events = get_recognition_events()
+            if events and len(events) > last_sent_index:
+                for i, event in enumerate(events[last_sent_index:], start=last_sent_index):
+                    if isinstance(event, dict) and 'name' in event:
+                        safe_event = {
+                            "name": str(event.get("name", "Unknown")),
+                            "time": str(event.get("time", "")),
+                            "attendance_count": int(event.get("attendance_count", 0))
+                        }
 
-                    if events and len(events) > last_sent_index:
-                        for i, event in enumerate(events[last_sent_index:], start=last_sent_index):
-                            if isinstance(event, dict) and 'name' in event:
-                                safe_event = {
-                                    "name": str(event.get("name", "Unknown")),
-                                    "time": str(event.get("time", "")),
-                                    "attendance_count": int(event.get("attendance_count", 0))
-                                }
+                        yield f"data: {json.dumps(safe_event)}\n\n"
+                        last_sent_index = i + 1  # Update last index
 
-                                yield f"data: {json.dumps(safe_event)}\n\n"
-                                print(f"Sent event to client {connection_id}: {safe_event['name']}")
-
-                        last_sent_index = len(events)
-
-                    yield ":keep-alive\n\n"
-                    await asyncio.sleep(1.0)
-
-                except Exception as e:
-                    print(f"Error in SSE event loop: {str(e)}")
-                    await asyncio.sleep(2.0)
-
-        except asyncio.CancelledError:
-            print(f"SSE connection {connection_id} cancelled")
-        except Exception as e:
-            print(f"Fatal SSE connection error: {str(e)}")
-        finally:
-            active_sse_connections.discard(connection_id)
-            print(f"SSE connection {connection_id} closed. Active connections: {len(active_sse_connections)}")
+            yield ":keep-alive\n\n"
+            await asyncio.sleep(1.0)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 # Fixed video_feed function to better handle camera state
 @app.get("/video_feed")
