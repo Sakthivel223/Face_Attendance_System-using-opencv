@@ -522,27 +522,19 @@ async def start_recognition():
 async def stop_recognition():
     global recognition_active, recognition_thread, camera
 
-    logging.debug(f"Received request to stop recognition. Current status: recognition_active={recognition_active}")
-
     if not recognition_active:
-        logging.warning("Recognition is not running. Request ignored.")
         return {"success": False, "status": "Recognition is not running"}
 
-    try:
-        recognition_active = False  # ✅ Stop recognition before stopping thread
-        logging.info("Recognition marked as inactive. Stopping recognition thread...")
+    recognition_active = False
 
-        if recognition_thread and recognition_thread.is_alive():
-            recognition_thread.join(timeout=2.0)
-            recognition_thread = None  # ✅ Reset thread
+    if recognition_thread and recognition_thread.is_alive():
+        recognition_thread.join(timeout=2.0)
+        recognition_thread = None  # Reset thread
 
-        force_stop_camera()  # ✅ Ensure camera is released
+    force_stop_camera()  # Ensure camera is released
 
-        return {"success": True, "status": "Recognition stopped"}
+    return {"success": True, "status": "Recognition stopped"}
 
-    except Exception as e:
-        logging.error(f"Error stopping recognition: {e}")
-        return {"success": False, "status": f"Error stopping recognition: {str(e)}"}
 
 @app.get("/get_known_users")
 async def get_known_users():
