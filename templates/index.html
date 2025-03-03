@@ -742,30 +742,39 @@ function startRecognition() {
     if (startBtn.disabled) return;
 
     startBtn.disabled = true;
-    showToast("Starting recognition...", "info");
+    showToast("Starting camera...", "info");
 
-    fetch('/start_recognition', { method: 'POST' })
-        .then(response => {
-            if (!response.ok) {
-                return response.text().then(text => { throw new Error(text); });
-            }
-            return response.json();
-        })
-        .then(data => {
-            if (data.success) {
-                recognitionActive = true;
-                showToast(data.status, "success");
-            } else {
-                showToast(data.status, "error");
-                startBtn.disabled = false;
-            }
+    initializeCamera()
+        .then(() => {
+            showToast("Camera started. Starting face recognition...", "info");
+
+            setTimeout(() => {
+                fetch('/start_recognition', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            recognitionActive = true;
+                            showToast("Face recognition started!", "success");
+                            document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime(); // Force video refresh
+                        } else {
+                            showToast("Recognition failed: " + data.status, "error");
+                        }
+                        startBtn.disabled = false;
+                    })
+                    .catch(error => {
+                        console.error("Recognition start error:", error);
+                        showToast("Server error: " + error.message, "error");
+                        startBtn.disabled = false;
+                    });
+            }, 1000);
         })
         .catch(error => {
-            console.error("Error starting recognition:", error);
-            showToast("Server error: " + error.message, "error");
+            console.error("Camera error:", error);
+            showToast("⚠️ Camera failed to start", "error");
             startBtn.disabled = false;
         });
 }
+
 
 function stopRecognition() {
     let startBtn = document.getElementById("startBtn");
@@ -899,6 +908,12 @@ document.addEventListener('DOMContentLoaded', function () {
 window.addEventListener("beforeunload", function () {
     stopCamera();  // ✅ Stop camera when leaving the page
 });
+function reloadVideoFeed() {
+    document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
+}
+setInterval(reloadVideoFeed, 500);
+
+
 
       </script>
 </body>
