@@ -567,30 +567,41 @@ function updateUptime() {
 }
 
 // Add this function to update status regularly
-function updateSystemStatus() {
+function updateStatusDisplay() {
     fetch('/check_status')
         .then(response => response.json())
         .then(data => {
+            // Update recognition status
             const statusElement = document.getElementById('status');
             const cameraStatusElement = document.getElementById('cameraStatus');
-            
-            // Update recognition status immediately
+            const lastRecognitionElement = document.getElementById('lastRecognition');
+
             if (data.recognition_active) {
                 statusElement.innerHTML = '<span class="status-active">Active</span>';
             } else {
                 statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
             }
-            
+
             // Update camera status
             cameraStatusElement.textContent = data.camera_available === "available" 
                 ? "✅ Camera Active" 
                 : "❌ Camera Not Available";
+
+            // ✅ Force refresh event listener if not active
+            if (data.recognition_active) {
+                setupSSEListener();
+            }
+
+            // Update last recognition time
+            if (lastRecognitionElement && data.last_seen) {
+                lastRecognitionElement.textContent = new Date(data.last_seen).toLocaleTimeString();
+            }
         })
         .catch(error => console.error('Status update error:', error));
 }
 
-// Run every 1 second for real-time updates
-setInterval(updateSystemStatus, 1000);
+// ✅ Call updateStatusDisplay() every second to keep UI updated
+setInterval(updateStatusDisplay, 1000);
 
 
 function checkSystemStatus() {
@@ -728,55 +739,31 @@ let recognitionStarting = false;
 
 function startRecognition() {
     let startBtn = document.getElementById("startBtn");
-    if (startBtn.disabled) return; // Prevent multiple clicks
+    if (startBtn.disabled) return;
 
     startBtn.disabled = true;
     showToast("Starting recognition...", "info");
 
-    initializeCamera().then(() => {
-        fetch('/start_recognition', { method: 'POST' })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    recognitionActive = true;
-                    updateStatusDisplay();
-                    setupSSEListener(); // ✅ Ensure live updates are enabled
-                    showToast(data.status, "success");
-                } else {
-                    showToast(data.status, "error");
-                    startBtn.disabled = false; // Re-enable on failure
-                }
-            })
-            .catch(error => {
-                console.error("Error starting recognition:", error);
-                showToast("Error starting recognition!", "error");
+    fetch('/start_recognition', { method: 'POST' })
+        .then(response => {
+            if (!response.ok) {
+                return response.text().then(text => { throw new Error(text); });
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.success) {
+                recognitionActive = true;
+                showToast(data.status, "success");
+            } else {
+                showToast(data.status, "error");
                 startBtn.disabled = false;
-            });
-    }).catch(() => {
-        showToast("Camera initialization failed!", "error");
-        startBtn.disabled = false;
-    });
-}
-
-function stopRecognition() {
-    let startBtn = document.getElementById("startBtn");
-    showToast('⏹ Stopping recognition...', 'info');
-
-    fetch('/stop_recognition', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                showToast('✅ Recognition stopped successfully!', 'success');
-                recognitionActive = false;
-                startBtn.disabled = false;  // Re-enable Start button
-                stopCamera();
-            } else {
-                showToast('Error: ' + data.status, 'error');
             }
         })
         .catch(error => {
-            console.error('❌ Error stopping recognition:', error);
-            showToast('Error: ' + error.message, 'error');
+            console.error("Error starting recognition:", error);
+            showToast("Server error: " + error.message, "error");
+            startBtn.disabled = false;
         });
 }
 
@@ -790,7 +777,8 @@ function stopRecognition() {
             if (data.success) {
                 showToast('✅ Recognition stopped successfully!', 'success');
                 recognitionActive = false;
-                startBtn.disabled = false;  // Re-enable Start button
+                startBtn.disabled = false;  // ✅ Re-enable Start button
+                startBtn.textContent = "Start Recognition";  // ✅ Reset button text
                 stopCamera();
             } else {
                 showToast('Error: ' + data.status, 'error');
@@ -801,6 +789,7 @@ function stopRecognition() {
             showToast('Error: ' + error.message, 'error');
         });
 }
+
 
 // Event listener for recognized faces using Server-Sent Events
 // Modify setupSSEListener function

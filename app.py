@@ -9,6 +9,8 @@ from fastapi.templating import Jinja2Templates
 import uvicorn
 import cv2
 import threading
+import asyncio
+import traceback
 import time
 import json
 import os
@@ -42,6 +44,7 @@ GREETING_COOLDOWN = 300  # 5 minutes cooldown per person
 recognized_users = {}
 
 # Configuration
+KNOWN_FACES_PATH = "known_faces.json"
 FACE_DB_PATH = "Dataset"
 DETECTION_INTERVAL = 0.2  # seconds between detections (faster for continuous recognition)
 CONFIDENCE_THRESHOLD = 0.8  # minimum confidence for a match
@@ -79,57 +82,54 @@ if not os.path.exists(EXCEL_LOG_PATH):
 
 @app.get("/favicon.ico")
 async def get_favicon():
-    return FileResponse("static/favicon.ico")
+    return FileResponse("static/icons/favicon.ico")
 
-# Load known faces from database
+# Path to saved face encodings
+
 def load_known_faces():
-    global known_face_encodings, known_face_names
-    known_face_encodings = []
-    known_face_names = []
-    
-    print("Loading known faces...")
-    
-    for person_name in os.listdir(FACE_DB_PATH):
-        person_dir = os.path.join(FACE_DB_PATH, person_name)
-        if not os.path.isdir(person_dir):
-            continue
-        
-        encoding_path = os.path.join(person_dir, "encoding.json")
-        if os.path.exists(encoding_path):
-            try:
-                with open(encoding_path, 'r') as f:
-                    face_data = json.load(f)
-                    if 'encoding' in face_data:
-                        face_encoding = np.array(face_data['encoding'])
-                        if face_encoding.shape == (128,):  # Validate encoding shape
-                            known_face_encodings.append(face_encoding)
-                            known_face_names.append(person_name)
-                            print(f"Loaded encoding for: {person_name}")
-                        else:
-                            print(f"Invalid encoding shape for {person_name}")
-            except Exception as e:
-                print(f"Error loading {encoding_path}: {str(e)}")
-            continue
-        
-        # Load from images if no encoding.json
-        for filename in os.listdir(person_dir):
-            if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-                image_path = os.path.join(person_dir, filename)
-                try:
-                    image = face_recognition.load_image_file(image_path)
-                    face_encodings = face_recognition.face_encodings(image)
-                    if face_encodings:
-                        face_encoding = face_encodings[0]
-                        known_face_encodings.append(face_encoding)
-                        known_face_names.append(person_name)
-                        print(f"Loaded face from {filename} for {person_name}")
-                        break  # Use first valid image
-                    else:
-                        print(f"No face found in {image_path}")
-                except Exception as e:
-                    print(f"Error processing {image_path}: {str(e)}")
-    
-    print(f"Successfully loaded {len(known_face_encodings)} face encodings")
+    """Loads known face encodings from JSON instead of reprocessing images."""
+    global known_faces, known_face_encodings, known_face_names
+
+    known_face_encodings.clear()
+    known_face_names.clear()
+
+    try:
+        # ✅ Load known faces from JSON if available
+        if os.path.exists(KNOWN_FACES_PATH):
+            with open(KNOWN_FACES_PATH, "r") as f:
+                data = json.load(f)
+                known_face_encodings.extend(data["encodings"])
+                known_face_names.extend(data["names"])
+            print(f"✅ Loaded {len(known_face_encodings)} known faces from JSON.")
+            return
+
+        # ❌ If JSON is missing, fall back to Dataset/ folder
+        print("⚠️ known_faces.json not found, loading from Dataset folder instead...")
+        known_faces = {}  # Reset previous data
+
+        if not os.path.exists(FACE_DB_PATH):
+            print(f"❌ No face dataset found at {FACE_DB_PATH}")
+            return
+
+        for filename in os.listdir(FACE_DB_PATH):
+            filepath = os.path.join(FACE_DB_PATH, filename)
+            image = face_recognition.load_image_file(filepath)
+            encoding = face_recognition.face_encodings(image)
+
+            if encoding:
+                known_face_encodings.append(encoding[0])
+                known_face_names.append(os.path.splitext(filename)[0])
+                print(f"✅ Loaded face encoding for {filename}")
+            else:
+                print(f"⚠️ Could not extract face encoding from {filename}")
+
+        # ✅ Save processed encodings to JSON for future use
+        with open(KNOWN_FACES_PATH, "w") as f:
+            json.dump({"encodings": known_face_encodings, "names": known_face_names}, f)
+        print(f"✅ Saved {len(known_face_encodings)} encodings to JSON.")
+
+    except Exception as e:
+        print(f"❌ Error loading known faces: {str(e)}")
 
 # Initialize attendance log for today
 def init_attendance_log():
@@ -181,18 +181,21 @@ def force_stop_camera():
             time.sleep(1)  # Allow time for the camera to reset
 
 def initialize_camera():
+    """Initialize the camera with multiple index attempts."""
     global camera
     force_stop_camera()
+
     with camera_lock:
-        # Try different camera indexes
-        for index in [CAMERA_INDEX, 1, 2]:  # Common webcam indexes
+        for index in range(3):  # Try different indexes (0, 1, 2)
             camera = cv2.VideoCapture(index)
             if camera.isOpened():
                 print(f"✅ Camera initialized at index {index}")
                 return True
             camera.release()
-        print("❌ Failed to initialize camera")
+
+        print("❌ Failed to initialize camera. No working index found.")
         return False
+
     
 
 # Modify the face recognition thread
@@ -502,8 +505,8 @@ async def recognized_faces_stream():
                         yield f"data: {json.dumps(safe_event)}\n\n"
                         last_sent_index = i + 1
                 
-                # Send regular keep-alive
-                yield ":\n\n"
+                # ✅ Send a keep-alive event to prevent disconnects
+                yield "data: {}\n\n"
                 await asyncio.sleep(1)
                 
             except asyncio.CancelledError:
@@ -513,6 +516,7 @@ async def recognized_faces_stream():
                 await asyncio.sleep(3)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
 
 # Fixed video_feed function to better handle camera state
 @app.get("/video_feed")
@@ -562,40 +566,39 @@ async def video_feed():
 # Modified start_recognition and stop_recognition functions to ensure camera only runs when needed
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
+
+
 @app.post("/start_recognition")
 async def start_recognition():
-    global recognition_active, recognition_thread, camera
+    global recognition_active
 
-    print(f"🟢 Starting recognition. Current status: {recognition_active}")
+    try:
+        print(f"🟢 Start Recognition clicked. Current status: {recognition_active}")
 
-    with camera_lock:
         if recognition_active:
-            return {"success": False, "status": "Recognition is already running"}
+            return JSONResponse(status_code=400, content={"success": False, "status": "Recognition is already running"})
 
-        # Force release previous camera instance
-        force_stop_camera()
-        
-        # Initialize camera with retries
-        for attempt in range(3):
-            if initialize_camera():
-                break
-            print(f"Camera initialization failed, attempt {attempt+1}/3")
-            time.sleep(1)
-        else:
-            return {"success": False, "status": "Failed to initialize camera after 3 attempts"}
+        # Initialize the camera
+        if not initialize_camera():
+            return JSONResponse(status_code=500, content={"success": False, "status": "Failed to initialize camera"})
 
-        # Load known faces fresh every start
+        # Load known faces
         load_known_faces()
-        
-        # Reset recognition flags
+
+        # Set recognition flag
         recognition_active = True
 
-        # Start watchdog thread
-        recognition_thread = threading.Thread(target=face_recognition_watchdog)
-        recognition_thread.daemon = True
-        recognition_thread.start()
+        # ✅ Run face recognition in background
+        asyncio.create_task(process_face_recognition())
 
-    return {"success": True, "status": "Recognition started successfully"}
+        return JSONResponse(status_code=200, content={"success": True, "status": "Face recognition started successfully"})
+
+    except Exception as e:
+        error_message = f"❌ Error in start_recognition: {str(e)}"
+        print(error_message)
+        traceback.print_exc()  # ✅ Show full error details in terminal
+        return JSONResponse(status_code=500, content={"success": False, "status": error_message})
+
 
 def face_recognition_watchdog():
     """Restarts recognition thread on failure"""
@@ -608,104 +611,99 @@ def face_recognition_watchdog():
             traceback.print_exc()
             time.sleep(1)  # Prevent tight crash loop
 
-def face_recognition_thread():
-    """Main face recognition processing loop"""
-    global recognition_active
-    
+async def process_face_recognition():
+    """Runs face recognition using known_faces.json for speed."""
+    global recognition_active, camera
+
+    print("🔄 Running face recognition (Using JSON Data)")
+
     try:
+        if not known_face_encodings or not known_face_names:
+            print("⚠️ No known faces loaded. Attempting to load from JSON.")
+            load_known_faces()
+
         while recognition_active:
-            # Get fresh frame
             with camera_lock:
-                if not camera or not camera.isOpened():
-                    print("⚠️ Camera not available, reinitializing...")
+                if camera is None or not camera.isOpened():
+                    print("⚠️ Camera is not initialized. Attempting to restart.")
                     if not initialize_camera():
-                        print("❌ Failed to reinitialize camera")
-                        time.sleep(1)
-                        continue
-                
+                        print("❌ Camera initialization failed. Stopping recognition.")
+                        break
+
                 ret, frame = camera.read()
                 if not ret:
                     print("⚠️ Failed to capture frame")
-                    time.sleep(0.1)
+                    await asyncio.sleep(0.1)
                     continue
 
-            # Validate frame
-            if frame is None or frame.size == 0:
-                print("⚠️ Empty frame received")
-                continue
-
-            # Convert to RGB for face_recognition
+            # Convert frame to RGB for face recognition
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Face detection
+
+            # Detect faces
             face_locations = face_recognition.face_locations(rgb_frame)
             print(f"🔍 Detected {len(face_locations)} face(s)")
-            
-            # Face recognition
+
+            # Recognize faces
             face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            
+
             for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
                 if not known_face_encodings:
                     print("⚠️ No known faces in database")
                     continue
-                
-                # Calculate distances to known faces
+
+                # Find best match
                 distances = face_recognition.face_distance(known_face_encodings, face_encoding)
                 best_match_index = np.argmin(distances)
                 min_distance = distances[best_match_index]
-                
-                # Recognition logic
+
                 if min_distance < CONFIDENCE_THRESHOLD:
                     name = known_face_names[best_match_index]
-                    print(f"✅ Recognized {name} (confidence: {1 - min_distance:.2%})")
-                    
-                    # Update attendance and UI
+                    print(f"✅ Recognized: {name} (confidence: {1 - min_distance:.2%})")
+
+                    # ✅ Update attendance log and UI
                     update_excel_log(name)
                     add_recognition_event({
                         "name": name,
                         "time": datetime.datetime.now().isoformat(),
                         "attendance_count": len(attendance_log.get(datetime.date.today().isoformat(), set()))
                     })
-                    
-                    # Draw annotations
+
+                    # Draw face box
                     cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
                     cv2.putText(frame, name, (left + 6, bottom - 6), 
-                               cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+                                cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
                 else:
                     print(f"⚠️ Unknown face detected (confidence: {1 - min_distance:.2%})")
                     cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
                     cv2.putText(frame, "Unknown", (left + 6, bottom - 6), 
-                               cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+                                cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
-            # Update video stream
+            # ✅ Update video feed
             _, buffer = cv2.imencode('.jpg', frame)
             add_frame_to_buffer(buffer.tobytes())
-            
-            time.sleep(DETECTION_INTERVAL)
+
+            await asyncio.sleep(DETECTION_INTERVAL)
 
     except Exception as e:
-        print(f"❌ Critical error in recognition thread: {str(e)}")
+        print(f"❌ Critical error in face recognition: {str(e)}")
         traceback.print_exc()
     finally:
         recognition_active = False
-        print("🛑 Recognition thread stopped")
+        print("🛑 Face recognition stopped")
+
 
 @app.post("/stop_recognition")
 async def stop_recognition():
-    global recognition_active, recognition_thread, camera
+    global recognition_active, camera
 
     if not recognition_active:
         return {"success": False, "status": "Recognition is not running"}
 
-    recognition_active = False
+    recognition_active = False  # ✅ Stops face recognition immediately
+    await asyncio.sleep(0.5)  # ✅ Allow time for recognition loop to exit
+    force_stop_camera()  # ✅ Release camera
 
-    if recognition_thread and recognition_thread.is_alive():
-        recognition_thread.join(timeout=2.0)
-        recognition_thread = None  # Reset thread
-
-    force_stop_camera()  # Ensure camera is released
-
-    return {"success": True, "status": "Recognition stopped"}
+    return {"success": True, "status": "Face recognition stopped"}
 
 @app.get("/get_known_users")
 async def get_known_users():
