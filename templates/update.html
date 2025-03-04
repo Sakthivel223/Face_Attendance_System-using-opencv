@@ -356,6 +356,21 @@
             text-align: center;
         }
 
+        .captured-images-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .captured-image {
+            width: 120px;
+            height: 120px;
+            object-fit: cover;
+            border-radius: 4px;
+            border: 2px solid var(--light-color);
+        }
+
         /* Media Queries */
         
         /* Large Devices (Desktops, less than 1200px) */
@@ -565,8 +580,7 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <!-- Added directly loaded video feed - will be initialized when page loads -->
-            <video id="videoFeed" autoplay playsinline class="video-feed"></video>
+            <img id="videoFeed" class="video-feed" src="/static/icons/camera-placeholder.jpg" alt="Camera feed">
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Starting camera...</p>
@@ -577,7 +591,7 @@
             <h2 class="form-title"><i class="fas fa-camera"></i> Capture Face Images</h2>
             
             <div class="capture-info">
-                <i class="fas fa-info-circle"></i> Position your face clearly in the camera. The system will capture 10 images automatically.
+                <i class="fas fa-info-circle"></i> Position your face clearly in the camera. The system will capture multiple images for better recognition.
             </div>
             
             <div class="progress-container">
@@ -587,9 +601,14 @@
             <p id="captureStatus">Ready to capture 0/10 images</p>
             <div class="status-feedback" id="feedbackMessage"></div>
             
+            <div id="capturedImagesContainer" class="captured-images-container"></div>
+            
             <div class="button-panel">
                 <button class="btn btn-success" id="startCaptureBtn" onclick="startCapture()">
                     <i class="fas fa-play"></i> Start Capture
+                </button>
+                <button class="btn btn-primary" id="takeSingleImageBtn" onclick="takeSingleImage()">
+                    <i class="fas fa-camera"></i> Take Single Image
                 </button>
                 <button class="btn btn-danger" onclick="backToDetails()">
                     <i class="fas fa-arrow-left"></i> Back
@@ -618,8 +637,7 @@
     </div>
     
     <div class="toast" id="toast">
-        <span id="toastMessage">Message here</span>
-    </div>
+        <span id="toastMessage">Message here</span> </div>
     
     <footer>
         <div class="container">
@@ -635,33 +653,28 @@
         };
         
         let captureCount = 0;
+        let maxCaptureCount = 10;
         let isCaptureComplete = false;
-        let captureCheckTimer = null;
         let cameraStream = null;
+        let capturedImages = [];
         
-        function initializeVideoFeed() {
-            return new Promise((resolve, reject) => {
-                const videoElement = document.getElementById('videoFeed');
-                
-                if (cameraStream) {
-                    videoElement.srcObject = cameraStream;
-                    videoElement.onloadedmetadata = () => resolve("Camera initialized from preloaded stream");
-                    return;
+        // Check if static directory exists and create it if not
+        fetch('/static/icons/camera-placeholder.jpg')
+            .catch(() => {
+                console.warn('Camera placeholder image not found. Using fallback.');
+                // We'll use a text placeholder instead
+                const videoFeed = document.getElementById('videoFeed');
+                if (videoFeed) {
+                    videoFeed.style.backgroundColor = '#333';
+                    videoFeed.style.display = 'flex';
+                    videoFeed.style.justifyContent = 'center';
+                    videoFeed.style.alignItems = 'center';
+                    videoFeed.style.color = 'white';
+                    videoFeed.style.fontSize = '1.2rem';
+                    videoFeed.style.textAlign = 'center';
+                    videoFeed.innerHTML = '<div>Camera feed will appear here</div>';
                 }
-                
-                const constraints = {
-                    video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }
-                };
-                
-                navigator.mediaDevices.getUserMedia(constraints)
-                    .then(stream => {
-                        cameraStream = stream;
-                        videoElement.srcObject = stream;
-                        videoElement.onloadedmetadata = () => resolve("Camera initialized");
-                    })
-                    .catch(err => reject("Camera access error: " + err.message));
             });
-        }
         
         function validateDetails() {
             const name = document.getElementById('employeeName').value.trim();
@@ -676,164 +689,245 @@
         function goToCapture() {
             if (!validateDetails()) return;
             
-            document.getElementById('loadingOverlay').style.display = 'flex';
             document.getElementById('step1').classList.replace('active', 'completed');
             document.getElementById('step2').classList.add('active');
             document.getElementById('detailsForm').style.display = 'none';
             document.getElementById('captureContainer').style.display = 'block';
             document.getElementById('captureForm').style.display = 'block';
             
-            let cameraInitTimeout = setTimeout(() => {
-                document.getElementById('loadingOverlay').style.display = 'none';
-                showToast('Camera initialization taking longer than expected...', 'error');
-            }, 5000);
+            // Initialize camera
+            initializeCamera();
+        }
+        
+        function initializeCamera() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
             
-            initializeVideoFeed()
-                .then(message => {
-                    clearTimeout(cameraInitTimeout);
+            // First try to get a single image from the server
+            fetch('/capture_image')
+                .then(response => response.json())
+                .then(data => {
                     document.getElementById('loadingOverlay').style.display = 'none';
-                    showToast('Camera initialized successfully', 'success');
+                    
+                    if (data.success) {
+                        // Update the image with the captured frame
+                        const videoFeed = document.getElementById('videoFeed');
+                        videoFeed.src = data.image;
+                        showToast('Camera initialized successfully', 'success');
+                        
+                        if (data.face_detected) {
+                            document.getElementById('feedbackMessage').textContent = 'Face detected! You can start capturing images.';
+                            document.getElementById('feedbackMessage').style.color = 'green';
+                        } else {
+                            document.getElementById('feedbackMessage').textContent = 'No face detected. Please position yourself in front of the camera.';
+                            document.getElementById('feedbackMessage').style.color = 'orange';
+                        }
+                    } else {
+                        showToast('Failed to initialize camera: ' + data.status, 'error');
+                        document.getElementById('feedbackMessage').textContent = 'Camera error. Please check your camera connection.';
+                        document.getElementById('feedbackMessage').style.color = 'red';
+                    }
                 })
                 .catch(error => {
-                    clearTimeout(cameraInitTimeout);
                     document.getElementById('loadingOverlay').style.display = 'none';
-                    showToast('Failed to initialize camera: ' + error, 'error');
-                    backToDetails();
+                    console.error('Camera initialization error:', error);
+                    showToast('Error connecting to server', 'error');
+                    document.getElementById('feedbackMessage').textContent = 'Server connection error. Please try again.';
+                    document.getElementById('feedbackMessage').style.color = 'red';
                 });
         }
         
         function backToDetails() {
-    if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop()); // ✅ Release the camera
-        cameraStream = null;
-    }
-
-    document.getElementById('step2').classList.remove('active');
-    document.getElementById('step1').classList.replace('completed', 'active');
-    document.getElementById('captureContainer').style.display = 'none';
-    document.getElementById('captureForm').style.display = 'none';
-    document.getElementById('detailsForm').style.display = 'block';
-}
-
+            document.getElementById('step2').classList.remove('active');
+            document.getElementById('step1').classList.replace('completed', 'active');
+            document.getElementById('captureContainer').style.display = 'none';
+            document.getElementById('captureForm').style.display = 'none';
+            document.getElementById('detailsForm').style.display = 'block';
+            
+            // Reset capture state
+            captureCount = 0;
+            isCaptureComplete = false;
+            capturedImages = [];
+            document.getElementById('captureProgress').style.width = '0%';
+            document.getElementById('captureStatus').textContent = `Ready to capture 0/${maxCaptureCount} images`;
+            document.getElementById('feedbackMessage').textContent = '';
+            document.getElementById('capturedImagesContainer').innerHTML = '';
+        }
         
         function startCapture() {
-            document.getElementById('loadingOverlay').style.display = 'flex';
-            const startBtn = document.getElementById('startCaptureBtn');
-            startBtn.disabled = true;
-            startBtn.classList.add('disabled');
-            
             if (!employeeData.name) {
                 showToast('Employee name is required', 'error');
-                document.getElementById('loadingOverlay').style.display = 'none';
-                startBtn.disabled = false;
-                startBtn.classList.remove('disabled');
                 return;
             }
             
-            fetch('/start_capture', {
+            const startBtn = document.getElementById('startCaptureBtn');
+            const singleImageBtn = document.getElementById('takeSingleImageBtn');
+            startBtn.disabled = true;
+            singleImageBtn.disabled = true;
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            document.getElementById('feedbackMessage').textContent = 'Starting capture process...';
+            
+            // Reset capture state
+            captureCount = 0;
+            capturedImages = [];
+            document.getElementById('captureProgress').style.width = '0%';
+            document.getElementById('captureStatus').textContent = `Capturing 0/${maxCaptureCount} images`;
+            document.getElementById('capturedImagesContainer').innerHTML = '';
+            
+            // Call the API to capture multiple images
+            fetch('/capture_registration_images', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: employeeData.name })
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    name: employeeData.name
+                })
             })
-            .then(response => {
-                if (!response.ok) throw new Error(`Server returned ${response.status}`);
-                return response.json();
-            })
+            .then(response => response.json())
             .then(data => {
                 document.getElementById('loadingOverlay').style.display = 'none';
+                
                 if (data.success) {
-                    showToast('Capture started. Please look at the camera', 'success');
-                    document.getElementById('feedbackMessage').textContent = 'Capturing images...';
-                    captureCount = 0;
+                    captureCount = data.images_captured;
                     updateCaptureProgress();
-                    monitorCaptureProgress();
+                    
+                    // Display captured images
+                    const container = document.getElementById('capturedImagesContainer');
+                    container.innerHTML = '';
+                    
+                    data.captured_images.forEach(imageData => {
+                        const img = document.createElement('img');
+                        img.src = imageData.image;
+                        img.className = 'captured-image';
+                        img.alt = 'Captured face';
+                        container.appendChild(img);
+                        
+                        capturedImages.push(imageData.image);
+                    });
+                    
+                    showToast(`Successfully captured ${captureCount} images!`, 'success');
+                    document.getElementById('feedbackMessage').textContent = data.status;
+                    document.getElementById('feedbackMessage').style.color = 'green';
+                    
+                    if (captureCount >= maxCaptureCount) {
+                        completeCapture();
+                    } else {
+                        startBtn.disabled = false;
+                        singleImageBtn.disabled = false;
+                    }
                 } else {
-                    throw new Error(data.message || 'Unknown error');
+                    showToast('Capture failed: ' + data.status, 'error');
+                    document.getElementById('feedbackMessage').textContent = data.status;
+                    document.getElementById('feedbackMessage').style.color = 'red';
+                    startBtn.disabled = false;
+                    singleImageBtn.disabled = false;
                 }
             })
             .catch(error => {
                 document.getElementById('loadingOverlay').style.display = 'none';
-                console.error('Error:', error);
-                showToast('Error connecting to server: ' + error.message, 'error');
+                console.error('Capture error:', error);
+                showToast('Server error: ' + error.message, 'error');
+                document.getElementById('feedbackMessage').textContent = 'Server connection error. Please try again.';
+                document.getElementById('feedbackMessage').style.color = 'red';
                 startBtn.disabled = false;
-                startBtn.classList.remove('disabled');
+                singleImageBtn.disabled = false;
             });
+        }
+        
+        function takeSingleImage() {
+            if (!employeeData.name) {
+                showToast('Employee name is required', 'error');
+                return;
+            }
+            
+            document.getElementById('loadingOverlay').style.display = 'flex';
+            
+            // Capture a single image
+            fetch('/capture_image')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Update the image with the captured frame
+                        const videoFeed = document.getElementById('videoFeed');
+                        videoFeed.src = data.image;
+                        
+                        if (data.face_detected) {
+                            // Register this face
+                            return fetch('/register_face', {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    name: employeeData.name,
+                                    image: data.image
+                                })
+                            });
+                        } else {
+                            document.getElementById('loadingOverlay').style.display = 'none';
+                            document.getElementById('feedbackMessage').textContent = 'No face detected. Please position yourself in front of the camera.';
+                            document.getElementById('feedbackMessage').style.color = 'orange';
+                            showToast('No face detected in the image', 'error');
+                            return Promise.reject('No face detected');
+                        }
+                    } else {
+                        document.getElementById('loadingOverlay').style.display = 'none';
+                        showToast('Failed to capture image: ' + data.status, 'error');
+                        return Promise.reject(data.status);
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                    
+                    if (data.success) {
+                        captureCount++;
+                        updateCaptureProgress();
+                        
+                        // Add to captured images
+                        const container = document.getElementById('capturedImagesContainer');
+                        const img = document.createElement('img');
+                        img.src = document.getElementById('videoFeed').src;
+                        img.className = 'captured-image';
+                        img.alt = 'Captured face';
+                        container.appendChild(img);
+                        
+                        capturedImages.push(document.getElementById('videoFeed').src);
+                        
+                        showToast('Image captured successfully!', 'success');
+                        document.getElementById('feedbackMessage').textContent = data.status;
+                        document.getElementById('feedbackMessage').style.color = 'green';
+                        
+                        if (captureCount >= maxCaptureCount) {
+                            completeCapture();
+                        }
+                    } else {
+                        showToast('Registration failed: ' + data.status, 'error');
+                        document.getElementById('feedbackMessage').textContent = data.status;
+                        document.getElementById('feedbackMessage').style.color = 'red';
+                    }
+                })
+                .catch(error => {
+                    if (error === 'No face detected') return; // Already handled
+                    
+                    document.getElementById('loadingOverlay').style.display = 'none';
+                    console.error('Image capture error:', error);
+                    showToast('Server error', 'error');
+                    document.getElementById('feedbackMessage').textContent = 'Server connection error. Please try again.';
+                    document.getElementById('feedbackMessage').style.color = 'red';
+                });
         }
         
         function updateCaptureProgress() {
             const progressBar = document.getElementById('captureProgress');
             const progressText = document.getElementById('captureStatus');
-            const percentage = (captureCount / 10) * 100;
+            const percentage = (captureCount / maxCaptureCount) * 100;
             progressBar.style.width = percentage + '%';
-            progressText.textContent = `Capturing ${captureCount}/10 images`;
-        }
-        
-        function monitorCaptureProgress() {
-            captureCheckTimer = setInterval(() => {
-                fetch('/capture_status')
-                    .then(response => response.json())
-                    .then(data => {
-                        captureCount = data.captured_images || captureCount;
-                        updateCaptureProgress();
-                        
-                        if (data.status === 'complete' || data.captured_images >= 10) {
-                            clearInterval(captureCheckTimer);
-                            verifyDatasetAndComplete();
-                        } else if (data.status === 'error') {
-                            clearInterval(captureCheckTimer);
-                            showToast('Capture error: ' + data.message, 'error');
-                            document.getElementById('startCaptureBtn').disabled = false;
-                            document.getElementById('startCaptureBtn').classList.remove('disabled');
-                        }
-                    })
-                    .catch(error => {
-                        document.getElementById('feedbackMessage').textContent = 'Status check error, retrying...';
-                    });
-            }, 1000);
-            
-            setTimeout(() => {
-                if (captureCheckTimer && !isCaptureComplete) {
-                    clearInterval(captureCheckTimer);
-                    if (captureCount > 0) {
-                        verifyDatasetAndComplete();
-                    } else {
-                        showToast('Capture timed out. Please try again.', 'error');
-                        document.getElementById('startCaptureBtn').disabled = false;
-                        document.getElementById('startCaptureBtn').classList.remove('disabled');
-                    }
-                }
-            }, 30000);
-        }
-        
-        function verifyDatasetAndComplete() {
-            fetch('/verify_dataset', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: employeeData.name })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showToast('Dataset verified successfully!', 'success');
-                    completeCapture();
-                } else {
-                    showToast('Verification failed: ' + data.message, 'error');
-                    document.getElementById('startCaptureBtn').disabled = false;
-                    document.getElementById('startCaptureBtn').classList.remove('disabled');
-                }
-            })
-            .catch(error => {
-                console.error('Error verifying dataset:', error);
-                completeCapture();
-            });
+            progressText.textContent = `Captured ${captureCount}/${maxCaptureCount} images`;
         }
         
         function completeCapture() {
             isCaptureComplete = true;
-            if (cameraStream) {
-                cameraStream.getTracks().forEach(track => track.stop());
-                cameraStream = null;
-            }
             
             document.getElementById('step2').classList.replace('active', 'completed');
             document.getElementById('step3').classList.add('active');
@@ -842,24 +936,24 @@
             document.getElementById('completeForm').style.display = 'block';
             document.getElementById('employeeDetails').textContent = `Name: ${employeeData.name}`;
             
-            fetch('/register_employee', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(employeeData)
-            })
-            .catch(error => console.error('Error in final registration:', error));
+            showToast('Registration completed successfully!', 'success');
         }
         
         function resetForm() {
             document.getElementById('employeeName').value = '';
             document.getElementById('captureProgress').style.width = '0%';
-            document.getElementById('captureStatus').textContent = 'Ready to capture 0/10 images';
+            document.getElementById('captureStatus').textContent = `Ready to capture 0/${maxCaptureCount} images`;
             captureCount = 0;
             isCaptureComplete = false;
+            capturedImages = [];
             document.getElementById('feedbackMessage').textContent = '';
+            document.getElementById('capturedImagesContainer').innerHTML = '';
+            
             const startBtn = document.getElementById('startCaptureBtn');
+            const singleImageBtn = document.getElementById('takeSingleImageBtn');
             startBtn.disabled = false;
-            startBtn.classList.remove('disabled');
+            singleImageBtn.disabled = false;
+            
             document.getElementById('step3').classList.remove('active');
             document.getElementById('step2').classList.remove('completed');
             document.getElementById('step1').classList.add('active');
@@ -879,17 +973,9 @@
             }, 3000);
         }
 
-
         window.addEventListener("beforeunload", function () {
-    if (cameraStream) {
-        cameraStream.getTracks().forEach(track => track.stop());
-        cameraStream = null;
-        console.log("🔴 Camera stopped before leaving the page.");
-    }
-});
-
-
-
-        </script>
+            // Clean up resources when leaving the page
+        });
+    </script>
 </body>
 </html>

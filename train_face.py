@@ -22,14 +22,17 @@ def train_all_faces():
     print(f"🚀 Starting face training process for {DATASET_FOLDER}")
     
     if not os.path.exists(DATASET_FOLDER):
-        raise FileNotFoundError(f"Dataset folder '{DATASET_FOLDER}' not found")
+        os.makedirs(DATASET_FOLDER)
+        print(f"Created dataset folder '{DATASET_FOLDER}'")
+        return 0
 
     # Get all user directories
     users = [d for d in os.listdir(DATASET_FOLDER) 
              if os.path.isdir(os.path.join(DATASET_FOLDER, d))]
     
     if not users:
-        raise ValueError("No user folders found in dataset directory")
+        print("No user folders found in dataset directory")
+        return 0
 
     print(f"🔍 Found {len(users)} users in dataset")
     
@@ -71,7 +74,12 @@ def train_all_faces():
             
             # Quality control checks
             if valid_images < MIN_IMAGES_PER_USER:
-                raise ValueError(f"Only {valid_images} valid images found (minimum {MIN_IMAGES_PER_USER} required)")
+                print(f"  ⚠️ Only {valid_images} valid images found (minimum {MIN_IMAGES_PER_USER} required)")
+                if valid_images > 0:
+                    # Continue anyway if we have at least one valid image
+                    print("  ⚠️ Continuing with limited images")
+                else:
+                    raise ValueError(f"No valid face encodings generated")
                 
             if not encodings:
                 raise ValueError("No valid face encodings generated")

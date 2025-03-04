@@ -47,7 +47,7 @@ recognized_users = {}
 KNOWN_FACES_PATH = "known_faces.json"
 FACE_DB_PATH = "Dataset"
 DETECTION_INTERVAL = 0.2  # seconds between detections (faster for continuous recognition)
-CONFIDENCE_THRESHOLD = 0.8  # minimum confidence for a match
+CONFIDENCE_THRESHOLD = 0.6  # minimum confidence for a match (lowered for better recognition)
 CAMERA_INDEX = 0  # default camera
 MAX_CAPTURE_IMAGES = 15  # number of images to capture for registration
 EXCEL_LOG_PATH = "AttendanceData"  # Excel logs directory
@@ -65,9 +65,6 @@ tts_engine.setProperty('volume', 0.9)  # Volume (0 to 1)
 voice_greeting_cooldown = {}
 GREETING_COOLDOWN_TIME = 10  # seconds between greetings for the same person
 
-
-
-    
 # Ensure necessary directories exist
 if not os.path.exists(FACE_DB_PATH):
     os.makedirs(FACE_DB_PATH)
@@ -77,15 +74,11 @@ if not os.path.exists(EXCEL_LOG_PATH):
     os.makedirs(EXCEL_LOG_PATH)
     print(f"Created Excel logs directory: {EXCEL_LOG_PATH}")
 
-
-
-
 @app.get("/favicon.ico")
 async def get_favicon():
     return FileResponse("static/icons/favicon.ico")
 
 # Path to saved face encodings
-
 def load_known_faces():
     """Loads known face encodings from JSON and updates global lists."""
     global known_face_encodings, known_face_names
@@ -117,19 +110,25 @@ def load_known_faces():
     except Exception as e:
         print(f"❌ Error loading known faces: {str(e)}")
 
-
 # Initialize attendance log for today
 def init_attendance_log():
     global attendance_log
     today = datetime.date.today().isoformat()
     if today not in attendance_log:
-        attendance_log[today] = set()
+        attendance_log[today] = {}
 
 # Text to speech function with threading to avoid blocking
 def speak_greeting(name, is_exit=False):
     """Improved voice greetings with cooldown"""
-    GREETING_COOLDOWN_TIME = 10  # ✅ Reduce cooldown to 10 seconds
-
+    current_time = time.time()
+    
+    # Check if we should skip this greeting due to cooldown
+    if name in voice_greeting_cooldown:
+        last_greeting = voice_greeting_cooldown[name]
+        if current_time - last_greeting < GREETING_COOLDOWN_TIME:
+            print(f"Skipping greeting for {name} (cooldown active)")
+            return
+    
     message = ""
     if is_exit:
         messages = [
@@ -147,11 +146,15 @@ def speak_greeting(name, is_exit=False):
         message = random.choice(messages)
 
     def speak_task():
-        tts_engine.say(message)
-        tts_engine.runAndWait()
+        try:
+            tts_engine.say(message)
+            tts_engine.runAndWait()
+        except Exception as e:
+            print(f"Error in speech: {str(e)}")
 
     threading.Thread(target=speak_task, daemon=True).start()
-    voice_greeting_cooldown[name] = time.time()
+    voice_greeting_cooldown[name] = current_time
+    print(f"Greeting: {message}")
 
 # Safe camera initialization function
 def force_stop_camera():
@@ -171,208 +174,37 @@ def initialize_camera():
 
     with camera_lock:
         for index in range(3):  # Try different indexes (0, 1, 2)
-            camera = cv2.VideoCapture(index)
-            if camera.isOpened():
-                print(f"✅ Camera initialized at index {index}")
-                return True
-            camera.release()
+            try:
+                camera = cv2.VideoCapture(index)
+                if camera.isOpened():
+                    # Read a test frame to confirm camera is working
+                    ret, frame = camera.read()
+                    if ret and frame is not None and frame.size > 0:
+                        print(f"✅ Camera initialized at index {index}")
+                        return True
+                camera.release()
+            except Exception as e:
+                print(f"Error trying camera index {index}: {str(e)}")
+                if camera:
+                    camera.release()
 
         print("❌ Failed to initialize camera. No working index found.")
         return False
-
-
-   
-
-# Modify the face recognition thread
-def face_recognition_thread():
-    global recognition_active, camera
-    print("✅ Starting face recognition thread...")
-    
-    try:
-        load_known_faces()  # Reload faces every time the thread starts
-        
-        while recognition_active:
-            with camera_lock:
-                if camera is None or not camera.isOpened():
-                    print("Camera not initialized. Reinitializing...")
-                    if not initialize_camera():
-                        print("Failed to reinitialize camera. Retrying...")
-                        time.sleep(1)
-                        continue
-                
-                ret, frame = camera.read()
-                if not ret:
-                    print("Failed to capture frame")
-                    time.sleep(0.1)
-                    continue
-            
-            # Validate frame dimensions
-            if frame is None or frame.size == 0:
-                print("Invalid frame received")
-                continue
-            
-            # Debug: Save a test frame to disk
-            # cv2.imwrite("debug_frame.jpg", frame)
-            
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Face detection
-            face_locations = face_recognition.face_locations(rgb_frame)
-            print(f"Detected {len(face_locations)} face(s)")
-            
-            # Face recognition
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-            
-            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                if not known_face_encodings:
-                    print("No known faces to compare with")
-                    continue
-                
-                distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                best_match_index = np.argmin(distances)
-                min_distance = distances[best_match_index]
-                
-                print(f"Best match distance: {min_distance:.4f} (Threshold: {CONFIDENCE_THRESHOLD})")
-                
-                if min_distance < CONFIDENCE_THRESHOLD:
-                    name = known_face_names[best_match_index]
-                    print(f"Recognized: {name}")
-                    
-                    # Update attendance and draw UI
-                    update_excel_log(name)
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                    cv2.putText(frame, name, (left + 6, bottom - 6), 
-                               cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-                else:
-                    print("No match found")
-            
-            # Update frame buffer
-            _, buffer = cv2.imencode('.jpg', frame)
-            add_frame_to_buffer(buffer.tobytes())
-            
-            time.sleep(DETECTION_INTERVAL)
-            
-    except Exception as e:
-        print(f"CRITICAL ERROR in recognition thread: {str(e)}")
-        traceback.print_exc()
-    finally:
-        recognition_active = False
-        print("Recognition thread stopped")
-        
-def save_to_excel(excel_file, date, name, entry_time, exit_time):
-    if not os.path.exists(EXCEL_LOG_PATH):
-        os.makedirs(EXCEL_LOG_PATH)
-
-    if os.path.exists(excel_file):
-        df = pd.read_excel(excel_file, engine="openpyxl")
-    else:
-        df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
-
-    existing_entry = df[(df["Date"] == date) & (df["Name"] == name)]
-
-    if existing_entry.empty:
-        df = pd.concat([df, pd.DataFrame({"Date": [date], "Name": [name], "Entry Time": [entry_time], "Exit Time": [""]})], ignore_index=True)
-    else:
-        df.loc[(df["Date"] == date) & (df["Name"] == name), "Exit Time"] = exit_time
-
-    df.to_excel(excel_file, index=False, engine="openpyxl")
-    print(f"✅ Excel updated: {excel_file}")
-
-# Function to update Excel attendance log
-def update_excel_log(name, is_exit=False):
-    global attendance_log
-    now = datetime.datetime.now()
-    today = now.date().isoformat()
-    current_time = now.strftime("%H:%M:%S")
-
-    with log_lock:
-        if today not in attendance_log:
-            attendance_log[today] = {}
-
-        if name not in attendance_log[today]:
-            # First Entry
-            attendance_log[today][name] = {
-                "entry_time": current_time,
-                "exit_time": "",
-                "last_seen": now
-            }
-            speak_greeting(name, is_exit=False)  # ✅ Greet on Entry
-
-        else:
-            # Check if last seen was more than 5 minutes ago
-            if is_exit and (now - attendance_log[today][name]["last_seen"]).seconds > 300:
-                attendance_log[today][name]["exit_time"] = current_time
-                speak_greeting(name, is_exit=True)  # ✅ Greet on Exit
-
-            # Update last seen time
-            attendance_log[today][name]["last_seen"] = now
-
-    # ✅ Save to Excel
-    excel_file = os.path.join(EXCEL_LOG_PATH, f"{datetime.datetime.now().strftime('%B-%Y')}.xlsx")
-    save_to_excel(excel_file, today, name, 
-                 attendance_log[today][name]["entry_time"],
-                 attendance_log[today][name]["exit_time"])
-
-
-# Function to train faces for a specific user
-def train_faces(username: str):
-    user_dir = os.path.join(FACE_DB_PATH, username)
-    
-    if not os.path.exists(user_dir):
-        print(f"User directory not found: {user_dir}")
-        return False
-    
-    # Find all image files for this user
-    face_encodings = []
-    for filename in os.listdir(user_dir):
-        if filename.endswith(('.jpg', '.jpeg', '.png')):
-            try:
-                image_path = os.path.join(user_dir, filename)
-                image = face_recognition.load
-                image = face_recognition.load_image_file(image_path)
-                encodings = face_recognition.face_encodings(image)
-                if encodings:
-                    face_encodings.append(encodings[0])
-            except Exception as e:
-                print(f"Error processing image {image_path}: {e}")
-    
-    if not face_encodings:
-        print(f"No valid face encodings found for user: {username}")
-        return False
-    
-    # Average the encodings for better recognition
-    average_encoding = np.mean(face_encodings, axis=0)
-    
-    # Save the encoding as JSON
-    encoding_file = os.path.join(user_dir, "encoding.json")
-    with open(encoding_file, 'w') as f:
-        json.dump({"encoding": average_encoding.tolist()}, f)
-    
-    print(f"Successfully trained faces for user: {username}")
-    
-    # Reload known faces if recognition is active
-    if recognition_active:
-        load_known_faces()
-    
-    return True
 
 # Frame buffer for streaming video
 frame_buffer = []
 frame_buffer_lock = threading.Lock()
 
-
-# WITH THIS UPDATED VERSION
 def add_frame_to_buffer(frame_bytes):
     with frame_buffer_lock:
         global frame_buffer
         frame_buffer = [frame_bytes]
-        print(f"Buffer updated with frame size: {len(frame_bytes)} bytes")  # Debug
 
 def get_latest_frame():
     with frame_buffer_lock:
         if not frame_buffer:
             return None
-        return frame_buffer[-1]  # This will now return the only frame
+        return frame_buffer[-1]
 
 # Recognition events for SSE
 recognition_events = []
@@ -417,6 +249,92 @@ def get_recognition_events():
     with recognition_events_lock:
         return list(recognition_events)
 
+def save_to_excel(excel_file, date, name, entry_time, exit_time):
+    if not os.path.exists(EXCEL_LOG_PATH):
+        os.makedirs(EXCEL_LOG_PATH)
+
+    try:
+        # Retry mechanism to handle locked files
+        for attempt in range(5):  # Retry up to 5 times
+            try:
+                if os.path.exists(excel_file):
+                    df = pd.read_excel(excel_file, engine="openpyxl")
+                else:
+                    df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
+
+                df["Exit Time"] = df["Exit Time"].astype(str)  # Ensure column is treated as string
+                
+                existing_entry = df[(df["Date"] == date) & (df["Name"] == name)]
+                
+                if existing_entry.empty:
+                    # New entry
+                    new_row = pd.DataFrame({"Date": [date], "Name": [name], "Entry Time": [entry_time], "Exit Time": [""]})
+                    df = pd.concat([df, new_row], ignore_index=True)
+                else:
+                    # Update existing exit time
+                    df.loc[(df["Date"] == date) & (df["Name"] == name), "Exit Time"] = str(exit_time)
+
+                # Use `with` to prevent file lock issues
+                with pd.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
+                    df.to_excel(writer, index=False)
+
+                print(f"✅ Excel updated: {excel_file}")
+                return True
+
+            except PermissionError:
+                print(f"⚠️ File is locked. Retrying... (Attempt {attempt + 1})")
+                time.sleep(1)  # Wait 1 second before retrying
+
+        print("❌ Error: Unable to update Excel file after multiple attempts.")
+        return False
+
+    except Exception as e:
+        print(f"❌ Error updating Excel: {str(e)}")
+        return False
+# Function to update Excel attendance log
+def update_excel_log(name, is_exit=False):
+    global attendance_log
+    now = datetime.datetime.now()
+    today = now.date().isoformat()
+    current_time = now.strftime("%H:%M:%S")
+
+    with log_lock:
+        if today not in attendance_log:
+            attendance_log[today] = {}
+
+        if name not in attendance_log[today]:
+            # First Entry
+            attendance_log[today][name] = {
+                "entry_time": current_time,
+                "exit_time": "",
+                "last_seen": now
+            }
+            speak_greeting(name, is_exit=False)
+            print(f"✅ New entry for {name} at {current_time}")
+        else:
+            # Check if last seen was more than 5 minutes ago
+            time_diff = (now - attendance_log[today][name]["last_seen"]).total_seconds()
+            if time_diff > 300:  # 5 minutes
+                attendance_log[today][name]["exit_time"] = current_time
+                speak_greeting(name, is_exit=True)
+                print(f"✅ Exit recorded for {name} at {current_time}")
+
+            # Update last seen time
+            attendance_log[today][name]["last_seen"] = now
+
+    # Save to Excel
+    excel_file = os.path.join(EXCEL_LOG_PATH, f"{datetime.datetime.now().strftime('%B-%Y')}.xlsx")
+    save_to_excel(excel_file, today, name, 
+                 attendance_log[today][name]["entry_time"],
+                 attendance_log[today][name]["exit_time"])
+    
+    # Add recognition event for frontend
+    add_recognition_event({
+        "name": name,
+        "time": now.isoformat(),
+        "attendance_count": len(attendance_log.get(today, {}))
+    })
+
 # Pydantic models for request validation
 class NameRequest(BaseModel):
     name: str
@@ -451,7 +369,7 @@ async def check_status():
         "recognition_active": recognition_active,
         "camera_available": camera_status,
         "known_faces_count": len(known_face_names),
-        "last_seen": datetime.datetime.now().isoformat()  # Add this line
+        "last_seen": datetime.datetime.now().isoformat()
     }
 
 # Modify the recognized_faces_stream function
@@ -475,7 +393,7 @@ async def recognized_faces_stream():
                         yield f"data: {json.dumps(safe_event)}\n\n"
                         last_sent_index = i + 1
                 
-                # ✅ Send a keep-alive event to prevent disconnects
+                # Send a keep-alive event to prevent disconnects
                 yield "data: {}\n\n"
                 await asyncio.sleep(1)
                 
@@ -486,7 +404,6 @@ async def recognized_faces_stream():
                 await asyncio.sleep(3)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
-
 
 # Fixed video_feed function to better handle camera state
 @app.get("/video_feed")
@@ -501,11 +418,6 @@ async def video_feed():
     return StreamingResponse(generate_frames(), media_type='multipart/x-mixed-replace; boundary=frame')
 
 
-# Modified start_recognition and stop_recognition functions to ensure camera only runs when needed
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-
-
-
 @app.post("/start_recognition")
 async def start_recognition():
     global recognition_active
@@ -517,24 +429,17 @@ async def start_recognition():
     if not initialize_camera():
         return JSONResponse(status_code=500, content={"success": False, "status": "Failed to initialize camera"})
 
+    # Load known faces
+    load_known_faces()
+    
+    if not known_face_encodings:
+        return JSONResponse(status_code=400, content={"success": False, "status": "No known faces found. Please register faces first."})
+
     # Start recognition thread
     recognition_active = True
     asyncio.create_task(process_face_recognition())
 
     return JSONResponse(status_code=200, content={"success": True, "status": "Face recognition started"})
-
-
-
-def face_recognition_watchdog():
-    """Restarts recognition thread on failure"""
-    while recognition_active:
-        try:
-            print("🔄 Starting face recognition thread...")
-            face_recognition_thread()
-        except Exception as e:
-            print(f"❌ Recognition thread crashed: {str(e)}")
-            traceback.print_exc()
-            time.sleep(1)  # Prevent tight crash loop
 
 async def process_face_recognition():
     """Runs face recognition using known_faces.json for speed."""
@@ -556,46 +461,53 @@ async def process_face_recognition():
                         break
 
                 ret, frame = camera.read()
-                if not ret:
+                if not ret or frame is None or frame.size == 0:
                     print("⚠️ Failed to capture frame")
                     await asyncio.sleep(0.1)
                     continue
 
+            # Process frame for face recognition
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_frame, model="hog")  # Change to "cnn" for better accuracy
-            print(f"🔍 Detected {len(face_locations)} face(s)")
+            face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+            
+            if face_locations:
+                print(f"🔍 Detected {len(face_locations)} face(s)")
+                
+                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
-            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+                    if not known_face_encodings:
+                        print("⚠️ No known faces in database")
+                        continue
 
-            for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                if not known_face_encodings:
-                    print("⚠️ No known faces in database")
-                    continue
+                    # Calculate face distances
+                    distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                    best_match_index = np.argmin(distances)
+                    min_distance = distances[best_match_index] if len(distances) > 0 else 1.0
 
-                distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                best_match_index = np.argmin(distances)
-                min_distance = distances[best_match_index] if len(distances) > 0 else 1.0
+                    if min_distance < CONFIDENCE_THRESHOLD:
+                        name = known_face_names[best_match_index]
+                        confidence = 1 - min_distance
+                        print(f"✅ Recognized: {name} (confidence: {confidence:.2%})")
+                        
+                        # Update attendance log
+                        update_excel_log(name)
+                        
+                        # Draw rectangle and name
+                        color = (0, 255, 0)  # Green for recognized faces
+                        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                        cv2.putText(frame, f"{name} ({confidence:.2%})", 
+                                   (left + 6, bottom - 6), 
+                                   cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+                    else:
+                        name = "Unknown"
+                        print(f"⚠️ Unknown face detected (confidence: {1 - min_distance:.2%})")
+                        color = (0, 0, 255)  # Red for unknown faces
+                        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+                        cv2.putText(frame, name, (left + 6, bottom - 6), 
+                                   cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
-                if min_distance < CONFIDENCE_THRESHOLD:
-                    name = known_face_names[best_match_index]
-                    print(f"✅ Recognized: {name} (confidence: {1 - min_distance:.2%})")
-                    update_excel_log(name)
-                    color = (0, 255, 0)  # Green for recognized faces
-                else:
-                    name = "Unknown"
-                    print(f"⚠️ Unknown face detected (confidence: {1 - min_distance:.2%})")
-                    color = (0, 0, 255)  # Red for unknown faces
-
-                cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-
-                update_excel_log(name)
-                add_recognition_event({
-                    "name": name,
-                    "time": datetime.datetime.now().isoformat(),
-                    "attendance_count": len(attendance_log.get(datetime.date.today().isoformat(), set()))
-                })
-
+            # Encode and add frame to buffer for streaming
             _, buffer = cv2.imencode('.jpg', frame)
             add_frame_to_buffer(buffer.tobytes())
 
@@ -618,9 +530,9 @@ async def stop_recognition():
     if not recognition_active:
         return {"success": False, "status": "Recognition is not running"}
 
-    recognition_active = False  # ✅ Stop face recognition immediately
-    await asyncio.sleep(0.5)  # ✅ Allow time for recognition loop to exit
-    force_stop_camera()  # ✅ Release camera
+    recognition_active = False  # Stop face recognition immediately
+    await asyncio.sleep(0.5)  # Allow time for recognition loop to exit
+    force_stop_camera()  # Release camera
 
     return {"success": True, "status": "Face recognition stopped"}
 
@@ -646,8 +558,8 @@ async def get_today_attendance():
         init_attendance_log()
         
         today = datetime.date.today().isoformat()
-        count = len(attendance_log.get(today, set()))
-        attended_users = list(attendance_log.get(today, set()))
+        count = len(attendance_log.get(today, {}))
+        attended_users = list(attendance_log.get(today, {}))
         
         return {
             "success": True,
@@ -714,10 +626,28 @@ async def register_face(data: ImageRequest):
             image_path = os.path.join(user_dir, image_filename)
             cv2.imwrite(image_path, img)
 
-            # Train the face model if encoding.json is missing
-            encoding_file = os.path.join(user_dir, "encoding.json")
-            if not os.path.exists(encoding_file):
-                train_faces(safe_name)  # ✅ Train faces when adding new users
+            # Update known_faces.json
+            try:
+                if os.path.exists(KNOWN_FACES_PATH):
+                    with open(KNOWN_FACES_PATH, 'r') as f:
+                        known_faces_data = json.load(f)
+                else:
+                    known_faces_data = {}
+                
+                # Add or update the face encoding
+                known_faces_data[safe_name] = face_encoding.tolist()
+                
+                # Save the updated data
+                with open(KNOWN_FACES_PATH, 'w') as f:
+                    json.dump(known_faces_data, f, indent=4)
+                
+                # Reload known faces
+                load_known_faces()
+                
+                print(f"✅ Updated known_faces.json with {safe_name}")
+            except Exception as e:
+                print(f"❌ Error updating known_faces.json: {str(e)}")
+                return {"success": False, "status": f"Error updating face database: {str(e)}"}
 
             return {
                 "success": True,
@@ -731,7 +661,6 @@ async def register_face(data: ImageRequest):
 
     except Exception as e:
         return {"success": False, "status": f"Server error: {str(e)}"}
-
 
 @app.post("/delete_user")
 async def delete_user(data: NameRequest):
@@ -751,9 +680,22 @@ async def delete_user(data: NameRequest):
         import shutil
         shutil.rmtree(user_dir)
         
-        # Reload known faces if recognition is active
-        if recognition_active:
-            load_known_faces()
+        # Remove from known_faces.json
+        try:
+            if os.path.exists(KNOWN_FACES_PATH):
+                with open(KNOWN_FACES_PATH, 'r') as f:
+                    known_faces_data = json.load(f)
+                
+                if name in known_faces_data:
+                    del known_faces_data[name]
+                    
+                    with open(KNOWN_FACES_PATH, 'w') as f:
+                        json.dump(known_faces_data, f, indent=4)
+                    
+                    # Reload known faces
+                    load_known_faces()
+        except Exception as e:
+            print(f"❌ Error updating known_faces.json: {str(e)}")
         
         return {"success": True, "status": f"User '{name}' deleted successfully"}
         
@@ -786,7 +728,7 @@ async def capture_image():
             # Capture actual frame for processing
             ret, frame = camera.read()
             
-        if not ret:
+        if not ret or frame is None or frame.size == 0:
             return {"success": False, "status": "Failed to capture image"}
         
         # Detect face and draw bounding box
@@ -808,6 +750,8 @@ async def capture_image():
         }
         
     except Exception as e:
+        print(f"Error in capture_image: {str(e)}")
+        traceback.print_exc()
         return {"success": False, "status": f"Error capturing image: {str(e)}"}
 
 @app.post("/capture_registration_images")
@@ -846,6 +790,7 @@ async def capture_registration_images(data: NameRequest):
         
         captured_images = []
         face_detected_count = 0
+        face_encodings_list = []
         
         # Capture multiple images
         for i in range(MAX_CAPTURE_IMAGES):
@@ -854,8 +799,8 @@ async def capture_registration_images(data: NameRequest):
                 time.sleep(0.5)
                 ret, frame = camera.read()
                 
-            if not ret:
-                return {"success": False, "status": "Failed to capture image"}
+            if not ret or frame is None or frame.size == 0:
+                continue
             
             # Detect face in the frame
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -868,6 +813,11 @@ async def capture_registration_images(data: NameRequest):
             if len(face_locations) > 1:
                 # Skip this image if multiple faces are detected
                 continue
+            
+            # Get face encoding
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+            if face_encodings:
+                face_encodings_list.append(face_encodings[0])
             
             # Draw a box around the face
             for (top, right, bottom, left) in face_locations:
@@ -896,10 +846,34 @@ async def capture_registration_images(data: NameRequest):
             if face_detected_count >= MAX_CAPTURE_IMAGES:
                 break
         
-        # Train the face model with the captured images
-        if face_detected_count > 0:
-            train_success = train_faces(safe_name)
-            training_status = "Face model trained successfully" if train_success else "Failed to train face model"
+        # Update known_faces.json with average encoding
+        if face_encodings_list:
+            try:
+                # Calculate average encoding
+                average_encoding = np.mean(face_encodings_list, axis=0)
+                
+                # Load existing known faces
+                if os.path.exists(KNOWN_FACES_PATH):
+                    with open(KNOWN_FACES_PATH, 'r') as f:
+                        known_faces_data = json.load(f)
+                else:
+                    known_faces_data = {}
+                
+                # Add or update the face encoding
+                known_faces_data[safe_name] = average_encoding.tolist()
+                
+                # Save the updated data
+                with open(KNOWN_FACES_PATH, 'w') as f:
+                    json.dump(known_faces_data, f, indent=4)
+                
+                # Reload known faces
+                load_known_faces()
+                
+                print(f"✅ Updated known_faces.json with {safe_name}")
+                training_status = "Face model trained successfully"
+            except Exception as e:
+                print(f"❌ Error updating known_faces.json: {str(e)}")
+                training_status = f"Error training face model: {str(e)}"
         else:
             training_status = "No faces detected in captured images"
         
@@ -907,10 +881,12 @@ async def capture_registration_images(data: NameRequest):
             "success": face_detected_count > 0,
             "status": training_status,
             "images_captured": face_detected_count,
-            "captured_images": captured_images
+            "captured_images": captured_images[:5]  # Limit to first 5 images to avoid large response
         }
         
     except Exception as e:
+        print(f"Error in capture_registration_images: {str(e)}")
+        traceback.print_exc()
         return {"success": False, "status": f"Error capturing images: {str(e)}"}
 
 @app.get("/excel_logs")
@@ -984,7 +960,7 @@ if __name__ == "__main__":
         print("Starting Face Recognition Attendance System...")
         # Don't load faces at startup, only when recognition starts
         init_attendance_log()
-        uvicorn.run(app, host="localhost", port=8000)
+        uvicorn.run(app, host="127.0.0.1", port=8000)
     except KeyboardInterrupt:
         print("Server interrupted, shutting down...")
         # Cleanup
