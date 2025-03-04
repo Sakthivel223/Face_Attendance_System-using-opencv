@@ -87,49 +87,36 @@ async def get_favicon():
 # Path to saved face encodings
 
 def load_known_faces():
-    """Loads known face encodings from JSON instead of reprocessing images."""
-    global known_faces, known_face_encodings, known_face_names
+    """Loads known face encodings from JSON and updates global lists."""
+    global known_face_encodings, known_face_names
 
     known_face_encodings.clear()
     known_face_names.clear()
 
     try:
-        # ✅ Load known faces from JSON if available
         if os.path.exists(KNOWN_FACES_PATH):
             with open(KNOWN_FACES_PATH, "r") as f:
                 data = json.load(f)
-                known_face_encodings.extend(data["encodings"])
-                known_face_names.extend(data["names"])
+
+            if not isinstance(data, dict):
+                print("⚠️ Invalid JSON format: Expected a dictionary with names as keys.")
+                return
+
+            for name, encoding in data.items():
+                if isinstance(encoding, list) and len(encoding) == 128:  # FaceNet encodings have 128 values
+                    known_face_encodings.append(encoding)
+                    known_face_names.append(name)
+                else:
+                    print(f"⚠️ Skipping invalid encoding for {name}")
+
             print(f"✅ Loaded {len(known_face_encodings)} known faces from JSON.")
-            return
 
-        # ❌ If JSON is missing, fall back to Dataset/ folder
-        print("⚠️ known_faces.json not found, loading from Dataset folder instead...")
-        known_faces = {}  # Reset previous data
-
-        if not os.path.exists(FACE_DB_PATH):
-            print(f"❌ No face dataset found at {FACE_DB_PATH}")
-            return
-
-        for filename in os.listdir(FACE_DB_PATH):
-            filepath = os.path.join(FACE_DB_PATH, filename)
-            image = face_recognition.load_image_file(filepath)
-            encoding = face_recognition.face_encodings(image)
-
-            if encoding:
-                known_face_encodings.append(encoding[0])
-                known_face_names.append(os.path.splitext(filename)[0])
-                print(f"✅ Loaded face encoding for {filename}")
-            else:
-                print(f"⚠️ Could not extract face encoding from {filename}")
-
-        # ✅ Save processed encodings to JSON for future use
-        with open(KNOWN_FACES_PATH, "w") as f:
-            json.dump({"encodings": known_face_encodings, "names": known_face_names}, f)
-        print(f"✅ Saved {len(known_face_encodings)} encodings to JSON.")
+        else:
+            print("⚠️ known_faces.json not found. Face recognition will not work.")
 
     except Exception as e:
         print(f"❌ Error loading known faces: {str(e)}")
+
 
 # Initialize attendance log for today
 def init_attendance_log():
@@ -141,10 +128,7 @@ def init_attendance_log():
 # Text to speech function with threading to avoid blocking
 def speak_greeting(name, is_exit=False):
     """Improved voice greetings with cooldown"""
-    if name in voice_greeting_cooldown:
-        elapsed = time.time() - voice_greeting_cooldown[name]
-        if elapsed < GREETING_COOLDOWN_TIME:
-            return
+    GREETING_COOLDOWN_TIME = 10  # ✅ Reduce cooldown to 10 seconds
 
     message = ""
     if is_exit:
@@ -196,7 +180,8 @@ def initialize_camera():
         print("❌ Failed to initialize camera. No working index found.")
         return False
 
-    
+
+   
 
 # Modify the face recognition thread
 def face_recognition_thread():
@@ -576,14 +561,10 @@ async def process_face_recognition():
                     await asyncio.sleep(0.1)
                     continue
 
-            # Convert frame to RGB for face recognition
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            # Detect faces
-            face_locations = face_recognition.face_locations(rgb_frame)
+            face_locations = face_recognition.face_locations(rgb_frame, model="hog")  # Change to "cnn" for better accuracy
             print(f"🔍 Detected {len(face_locations)} face(s)")
 
-            # Recognize faces
             face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
 
             for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
@@ -591,52 +572,35 @@ async def process_face_recognition():
                     print("⚠️ No known faces in database")
                     continue
 
-                # Find best match
                 distances = face_recognition.face_distance(known_face_encodings, face_encoding)
                 best_match_index = np.argmin(distances)
-                min_distance = distances[best_match_index]
+                min_distance = distances[best_match_index] if len(distances) > 0 else 1.0
 
                 if min_distance < CONFIDENCE_THRESHOLD:
                     name = known_face_names[best_match_index]
                     print(f"✅ Recognized: {name} (confidence: {1 - min_distance:.2%})")
-
-                     # ✅ Green Box for Known Faces
-                    color = (0, 255, 0)
                     update_excel_log(name)
-
+                    color = (0, 255, 0)  # Green for recognized faces
                 else:
                     name = "Unknown"
-                    print(f"⚠️ Unknown face detected")
-        
-                     # ✅ Red Box for Unknown Faces
-                    color = (0, 0, 255)
+                    print(f"⚠️ Unknown face detected (confidence: {1 - min_distance:.2%})")
+                    color = (0, 0, 255)  # Red for unknown faces
 
-            # Draw Bounding Box
                 cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-                cv2.putText(frame, name, (left + 6, bottom - 6), 
-                cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
+                cv2.putText(frame, name, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
 
-                    # ✅ Update attendance log and UI
                 update_excel_log(name)
                 add_recognition_event({
-                        "name": name,
-                        "time": datetime.datetime.now().isoformat(),
-                        "attendance_count": len(attendance_log.get(datetime.date.today().isoformat(), set()))
-                    })
+                    "name": name,
+                    "time": datetime.datetime.now().isoformat(),
+                    "attendance_count": len(attendance_log.get(datetime.date.today().isoformat(), set()))
+                })
 
-                    # Draw face box
-                cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                cv2.putText(frame, name, (left + 6, bottom - 6), 
-                                cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-            else:
-                    print(f"⚠️ Unknown face detected (confidence: {1 - min_distance:.2%})")
-                    cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
-                    cv2.putText(frame, "Unknown", (left + 6, bottom - 6), 
-                                cv2.FONT_HERSHEY_DUPLEX, 0.8, (255, 255, 255), 1)
-
-            # ✅ Update video feed
             _, buffer = cv2.imencode('.jpg', frame)
             add_frame_to_buffer(buffer.tobytes())
+
+            if not recognition_active:  # Ensure loop stops when requested
+                break
 
             await asyncio.sleep(DETECTION_INTERVAL)
 
@@ -647,7 +611,6 @@ async def process_face_recognition():
         recognition_active = False
         print("🛑 Face recognition stopped")
 
-
 @app.post("/stop_recognition")
 async def stop_recognition():
     global recognition_active, camera
@@ -655,7 +618,7 @@ async def stop_recognition():
     if not recognition_active:
         return {"success": False, "status": "Recognition is not running"}
 
-    recognition_active = False  # ✅ Stops face recognition immediately
+    recognition_active = False  # ✅ Stop face recognition immediately
     await asyncio.sleep(0.5)  # ✅ Allow time for recognition loop to exit
     force_stop_camera()  # ✅ Release camera
 

@@ -411,7 +411,10 @@
     
     <div class="container content">
         <div class="video-container">
-<video id="videoFeed" class="video-feed" autoplay playsinline></video>
+            <video id="videoFeed" class="video-feed" autoplay playsinline>
+                <source src="/video_feed" type="video/mp4">
+            </video>
+            
 
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
@@ -908,10 +911,7 @@ document.addEventListener('DOMContentLoaded', function () {
 window.addEventListener("beforeunload", function () {
     stopCamera();  // ✅ Stop camera when leaving the page
 });
-function reloadVideoFeed() {
-    document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
-}
-setInterval(reloadVideoFeed, 500);
+
 
 
 
