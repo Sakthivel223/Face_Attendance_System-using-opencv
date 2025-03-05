@@ -9,8 +9,7 @@ env/
 # Credentials
 credentials.json
 
+
+
 # Logs
 *.log
-
-# Dataset
-Dataset/
