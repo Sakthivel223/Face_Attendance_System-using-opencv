@@ -580,7 +580,11 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <img id="videoFeed" class="video-feed" src="/static/icons/camera-placeholder.jpg" alt="Camera feed">
+            <img id="videoFeed" class="video-feed" src="" alt="Camera feed">
+            <script>
+                document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
+            </script>
+            
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Starting camera...</p>
