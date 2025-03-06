@@ -158,35 +158,31 @@ def speak_greeting(name, is_exit=False):
     voice_greeting_cooldown[name] = current_time
     print(f"Greeting: {message}")
 
-# Safe camera initialization function
 def force_stop_camera():
     global camera
     with camera_lock:
-        if camera is not None and camera.isOpened():
+        if camera is not None:
             camera.release()
-            time.sleep(1)  # Allow reset time
             camera = None
+            print("Camera released")
+    time.sleep(0.5)  # Allow reset time
 
-
+# Camera setup
 def initialize_camera():
     global camera
-    try:
+    if camera is None:
         camera = cv2.VideoCapture(0)
-        camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer
-        camera.set(cv2.CAP_PROP_FPS, 30)  # Set target FPS
+        camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        camera.set(cv2.CAP_PROP_FPS, 30)
         camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # Use MJPG for better latency
-
+        camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         if not camera.isOpened():
             print("Error: Could not open camera.")
-            return False
-        
-        print(f"Camera initialized with {camera.get(cv2.CAP_PROP_FRAME_WIDTH)}x{camera.get(cv2.CAP_PROP_FRAME_HEIGHT)} @ {camera.get(cv2.CAP_PROP_FPS)}fps")
-        return True
-    except Exception as e:
-        print(f"Error initializing camera: {e}")
-        return False
+            camera = None
+    return camera is not None
+
+camera = None
 
 # Store active peer connections
 peer_connections = set()
@@ -197,58 +193,79 @@ class VideoStreamTrack(MediaStreamTrack):
     def __init__(self):
         super().__init__()
         self.frame_count = 0
-        self.frame_timestamp = 0
-        self.start_time = time.time()
+        self.last_frame = None
 
     async def recv(self):
-        global camera
-        if camera is None or not camera.isOpened():
-            initialize_camera()
-
-        ret, frame = camera.read()
-        if not ret:
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)  # Blank frame if no camera input
+        global camera, recognition_active
         
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        av_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+        # Only access camera if initialized and needed
+        with camera_lock:
+            if camera is None or not camera.isOpened():
+                # Return empty frame if no camera
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            else:
+                ret, frame = camera.read()
+                if not ret:
+                    # Use last frame or empty frame
+                    frame = self.last_frame if self.last_frame is not None else np.zeros((480, 640, 3), dtype=np.uint8)
+                else:
+                    self.last_frame = frame.copy()
+        
+        # Process faces only if recognition is active
+        if recognition_active and self.frame_count % 3 == 0:
+            # Face recognition processing
+            pass  # Placeholder for face recognition processing
+        
+        # Convert to RGB for av.VideoFrame
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        av_frame = av.VideoFrame.from_ndarray(rgb_frame, format="rgb24")
         av_frame.pts = self.frame_count
         av_frame.time_base = fractions.Fraction(1, 30)
         self.frame_count += 1
+        
         return av_frame
-
+    
 @app.post("/offer")
-async def offer(request: Dict[str, Any]):
+async def offer(request: Request):
     try:
+        # Parse the request body
+        request_data = await request.json()
+        
         pc = RTCPeerConnection()
         peer_connections.add(pc)
-
-        # 🛠️ Make sure camera is initialized
-        if camera is None or not camera.isOpened():
-            initialize_camera()
-
-        # 🛠️ Ensure video track is added
+        
+        # Add cleanup callback when connection closes
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            if pc.connectionState == "failed" or pc.connectionState == "closed":
+                if pc in peer_connections:
+                    peer_connections.discard(pc)
+        
+        # Add video track
         video_track = VideoStreamTrack()
         pc.addTrack(video_track)
 
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            if pc.connectionState in ["failed", "closed"]:
-                peer_connections.discard(pc)
-
-        offer = RTCSessionDescription(sdp=request["sdp"], type=request["type"])
+        # Process the offer
+        offer = RTCSessionDescription(sdp=request_data["sdp"], type=request_data["type"])
         await pc.setRemoteDescription(offer)
-
-        # 🔹 Ensure media tracks exist before creating an answer
-        if not pc.getTransceivers():
-            raise ValueError("No media transceivers found")
-
+        
+        # Create and set answer
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
-
-        return JSONResponse(content={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
-
+        
+        # Update transceiver directions if needed
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "video" and transceiver.direction is None:
+                transceiver.direction = "sendrecv"
+        
+        return JSONResponse(content={
+            "sdp": pc.localDescription.sdp, 
+            "type": pc.localDescription.type
+        })
+    
     except Exception as e:
-        print(f"⚠️ Error in WebRTC setup: {e}")
+        print(f"Error in WebRTC setup: {str(e)}")
+        traceback.print_exc()
         return JSONResponse(content={"error": str(e)}, status_code=500)
 
 def setup_logging():
@@ -280,28 +297,19 @@ def setup_logging():
 
 # Use this in your code
 def log_error(message, exception=None):
-    """Log errors with stack trace and timestamp."""
-    if exception:
-        logging.error(f"{message}: {str(exception)}")
-        logging.debug(traceback.format_exc())
-    else:
-        logging.error(message)
-
-# Frame buffer for streaming video
-frame_buffer = []
-frame_buffer_lock = threading.Lock()
-
-
-# Add this function for better logging
-def log_error(message, exception=None):
     error_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     error_msg = f"[{error_time}] ERROR: {message}"
     if exception:
         error_msg += f"\n{traceback.format_exc()}"
     print(error_msg)
-    # Could also log to file
+    # Log to file
     with open("error_log.txt", "a") as f:
         f.write(error_msg + "\n")
+
+# Frame buffer for streaming video
+frame_buffer = []
+frame_buffer_lock = threading.Lock()
+
 
 # Add before face recognition to improve accuracy
 def align_face(image, face_location):
@@ -329,19 +337,39 @@ def align_face(image, face_location):
         # Return original image if alignment fails
         return image
     
- # Improve frame buffer implementation
-frame_buffer = None  # Store just the latest frame instead of a list
+# Frame buffer for streaming video
+frame_buffer = None  # Store just the latest frame
 frame_buffer_lock = threading.Lock()
 
 def update_frame_buffer(frame_bytes):
+    """Updates the global frame buffer with the latest frame bytes"""
     with frame_buffer_lock:
         global frame_buffer
-        frame_buffer = frame_bytes  # Just store the latest frame
+        frame_buffer = frame_bytes
 
 def get_latest_frame():
+    """Returns the latest frame from the buffer"""
     with frame_buffer_lock:
         return frame_buffer if frame_buffer else None
 
+
+async def cleanup_video_connections():
+    """Close all WebRTC connections properly"""
+    global peer_connections
+    
+    cleanup_tasks = []
+    for pc in list(peer_connections):
+        try:
+            cleanup_tasks.append(pc.close())
+        except Exception as e:
+            print(f"Error closing peer connection: {e}")
+    
+    if cleanup_tasks:
+        # Wait for all connections to close
+        await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+    
+    peer_connections.clear()
+    print(f"Closed {len(cleanup_tasks)} WebRTC connections")
 
 # Recognition events for SSE
 recognition_events = []
@@ -555,28 +583,7 @@ async def recognized_faces_stream():
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-@app.websocket("/ws/video")
-async def video_stream(websocket: WebSocket):
-    await websocket.accept()
-    if not recognition_active:
-        await websocket.send_json({"status": "inactive", "message": "Recognition not active"})
-        await websocket.close()
-        return
-
-    while True:
-        try:
-            data = await websocket.receive_json()
-            if data.get("action") == "requestFrame":
-                frame = get_latest_frame()
-                if frame:
-                    await websocket.send_bytes(frame)
-                else:
-                    await websocket.send_json({"status": "no_frame"})
-        except WebSocketDisconnect:
-            print("❌ WebSocket disconnected")
-            break
-
-                
+               
 @app.post("/start_recognition")
 async def start_recognition():
     global recognition_active, camera
@@ -584,12 +591,18 @@ async def start_recognition():
     if recognition_active:
         return JSONResponse(status_code=400, content={"success": False, "status": "Recognition already running"})
 
-    if not initialize_camera():
-        return JSONResponse(status_code=500, content={"success": False, "status": "Failed to initialize camera"})
+    # Initialize camera only when needed
+    with camera_lock:
+        if camera is None or not camera.isOpened():
+            if not initialize_camera():
+                return JSONResponse(status_code=500, content={"success": False, "status": "Failed to initialize camera"})
+
+    # Load face data if needed
+    if not known_face_encodings or not known_face_names:
+        load_known_faces()
 
     recognition_active = True
-    asyncio.create_task(process_face_recognition())
-
+    
     return JSONResponse(status_code=200, content={"success": True, "status": "Face recognition started"})
 
 
@@ -673,16 +686,14 @@ async def stop_recognition():
 
     recognition_active = False
     await asyncio.sleep(0.5)
+    
+    # Clean up WebRTC connections
+    await cleanup_video_connections()
+    
+    # Stop camera
     force_stop_camera()
     
-    # Remove this block as connection IDs cannot be closed directly
-    # for conn in active_sse_connections:
-    #     try:
-    #         await conn.close()
-    #     except Exception as e:
-    #         print(f"⚠️ Error closing WebSocket: {e}")
-    
-    # Simply clear the set
+    # Clear SSE connections
     active_sse_connections.clear()
 
     return {"success": True, "status": "Face recognition stopped"}
@@ -721,70 +732,6 @@ async def get_today_attendance():
     
     except Exception as e:
         return {"success": False, "status": f"Error getting attendance: {str(e)}"}
-
-# Store active WebRTC connections
-peer_connections = set()
-
-class VideoStreamTrack(MediaStreamTrack):
-    """Handles real-time video streaming using WebRTC."""
-    kind = "video"
-
-    async def recv(self):
-        global camera
-        success, frame = camera.read()
-        if not success:
-            return av.VideoFrame.from_ndarray(np.zeros((480, 640, 3), dtype=np.uint8), format="bgr24")
-
-        # Convert frame to RGB
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Perform face recognition every 5 frames (to reduce CPU load)
-        if self.frame_count % 5 == 0:
-            detected_faces = process_face_recognition(rgb_frame)
-            self.last_face_results = detected_faces
-
-        # Draw bounding boxes
-        for face in self.last_face_results:
-            left, top, right, bottom = face['location']
-            cv2.rectangle(frame, (left, top), (right, bottom), face['color'], 2)
-            cv2.putText(frame, face['name'], (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, face['color'], 2)
-
-        video_frame = av.VideoFrame.from_ndarray(frame, format="bgr24")
-        video_frame.pts = self.frame_count
-        video_frame.time_base = fractions.Fraction(1, 30)
-        self.frame_count += 1
-
-        return video_frame
-
-@app.post("/offer")
-async def offer(request: Dict[str, Any]):
-    try:
-        pc = RTCPeerConnection()
-        peer_connections.add(pc)
-
-        # Create video track
-        video_track = VideoStreamTrack()
-        pc.addTrack(video_track)
-
-        # Parse offer
-        offer = RTCSessionDescription(sdp=request["sdp"], type=request["type"])
-        await pc.setRemoteDescription(offer)
-
-        # Create answer
-        answer = await pc.createAnswer()
-
-        # Ensure media tracks have valid directions
-        for t in pc.getTransceivers():
-            if t.kind == "video" and t.direction is None:
-                t.direction = "sendrecv"  # Set valid direction
-
-        await pc.setLocalDescription(answer)
-
-        return JSONResponse(content={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
-
-    except Exception as e:
-        print(f"Error in WebRTC offer handling: {e}")
-        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
 @app.post("/register_face")
