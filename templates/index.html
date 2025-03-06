@@ -411,7 +411,7 @@
     
     <div class="container content">
         <div class="video-container">
-            <img id="videoFeed" class="video-feed" src="/video_feed" alt="Live Video Feed">
+            <video id="videoFeed" class="video-feed" autoplay playsinline></video>
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Initializing camera...</p>
@@ -470,388 +470,631 @@
     </footer>
     
     <script>
-        // System start time (for uptime calculation)
-        const startTime = new Date();
-        let recognitionActive = false;
-        let cameraInitialized = false;
-        let reconnectAttempts = 0;
-        const MAX_RECONNECT_ATTEMPTS = 5;
-        let reconnectDelay = 5000; // Start with 5 seconds, will increase with backoff
+// System start time (for uptime calculation)
+const startTime = new Date();
+let recognitionActive = false;
+let cameraInitialized = false;
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+let reconnectDelay = 5000; // Start with 5 seconds, will increase with backoff
+let currentWebSocket = null;
 
-        // Initialize the Web Speech API
-        const synth = window.speechSynthesisUtterance ? window.speechSynthesis : null;
-        let isSpeaking = false;
+// Initialize the Web Speech API
+const synth = window.speechSynthesis || null;
+let isSpeaking = false;
 
-        // Function to speak a message
-        function speakMessage(message) {
-            if (!synth || isSpeaking) return; // Avoid overlapping speech or if not supported
+// Function to speak a message
+function speakMessage(message) {
+    if (!synth || isSpeaking) return; // Avoid overlapping speech or if not supported
+    
+    // Wait for voices to be loaded
+    let voices = synth.getVoices();
+    if (voices.length === 0) {
+        // If voices aren't loaded yet, wait a bit and try again
+        setTimeout(() => speakMessage(message), 100);
+        return;
+    }
+    
+    const utterance = new SpeechSynthesisUtterance(message);
+    // Find preferred voice or fallback to default
+    const preferredVoice = voices.find(voice => voice.name.includes("English"));
+    if (preferredVoice) {
+        utterance.voice = preferredVoice;
+    }
+    
+    utterance.onend = () => isSpeaking = false;
+    isSpeaking = true;
+    synth.speak(utterance);
+}
+
+// Initialize when document is loaded
+document.addEventListener('DOMContentLoaded', function () {
+    // Update uptime every minute
+    setInterval(updateUptime, 60000);
+    updateUptime(); // Call immediately to show initial uptime
+    
+    // Load initial stats
+    loadSystemStats();
+    
+    // Check system status
+    checkSystemStatus();
+    
+    // Set up button event listeners
+    document.getElementById('startBtn').addEventListener('click', startRecognition);
+    document.getElementById('stopBtn').addEventListener('click', stopRecognition);
+    
+    // Set up the register new employee button
+    const registerBtn = document.querySelector('button[onclick="window.location.href=\'/update\'"]');
+    if (registerBtn) {
+        registerBtn.onclick = null; // Remove the inline handler
+        registerBtn.addEventListener('click', function() {
+            showToast('Navigating to registration page...', 'info');
             
-            // Wait for voices to be loaded
-            let voices = synth.getVoices();
-            if (voices.length === 0) {
-                // If voices aren't loaded yet, wait a bit and try again
-                setTimeout(() => speakMessage(message), 100);
-                return;
-            }
-            
-            const utterance = new SpeechSynthesisUtterance(message);
-            // Find preferred voice or fallback to default
-            const preferredVoice = voices.find(voice => voice.name.includes("English"));
-            if (preferredVoice) {
-                utterance.voice = preferredVoice;
-            }
-            
-            utterance.onend = () => isSpeaking = false;
-            isSpeaking = true;
-            synth.speak(utterance);
-        }
-
-        // Initialize when document is loaded
-        document.addEventListener('DOMContentLoaded', function () {
-            // Update uptime every minute
-            setInterval(updateUptime, 60000);
-            updateUptime(); // Call immediately to show initial uptime
-            
-            // Load initial stats
-            loadSystemStats();
-            
-            // Check system status
-            checkSystemStatus();
-            
-            // Set up button event listeners
-            document.getElementById('startBtn').addEventListener('click', startRecognition);
-            document.getElementById('stopBtn').addEventListener('click', stopRecognition);
-            
-            // Set up the register new employee button
-            const registerBtn = document.querySelector('button[onclick="window.location.href=\'/update\'"]');
-            if (registerBtn) {
-                registerBtn.onclick = null; // Remove the inline handler
-                registerBtn.addEventListener('click', function() {
-                    showToast('Navigating to registration page...', 'info');
-                    
-                    // First check if the page exists
-                    fetch('/update', { method: 'HEAD' })
-                        .then(response => {
-                            if (response.ok) {
-                                window.location.href = '/update';
-                            } else {
-                                throw new Error(`Page not found (${response.status})`);
-                            }
-                        })
-                        .catch(error => {
-                            console.error('Navigation error:', error);
-                            showToast('Error: Registration page not available. Please check the server.', 'error');
-                        });
-                    
-                    return false; // Prevent default action
-                });
-            }
-            
-            // Set up SSE listener for recognized faces
-            setupSSEListener();
-        });
-
-        function updateUptime() {
-            const now = new Date();
-            const uptimeHours = Math.floor((now - startTime) / (1000 * 60 * 60));
-            document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
-        }
-
-        function updateStatusDisplay() {
-            fetch('/check_status')
-                .then(response => response.json())
-                .then(data => {
-                    // Update recognition status
-                    const statusElement = document.getElementById('status');
-                    const cameraStatusElement = document.getElementById('cameraStatus');
-                    const lastRecognitionElement = document.getElementById('lastRecognition');
-
-                    if (data.recognition_active) {
-                        statusElement.innerHTML = '<span class="status-active">Active</span>';
-                        recognitionActive = true;
-                        
-                        // Update video feed if active
-                        const videoFeed = document.getElementById('videoFeed');
-                        if (videoFeed.tagName === 'IMG') {
-                            // Replace img with video element
-                            const videoElement = document.createElement('video');
-                            videoElement.id = 'videoFeed';
-                            videoElement.className = 'video-feed';
-                            videoElement.autoplay = true;
-                            videoElement.src = '/video_feed?' + new Date().getTime();
-                            videoFeed.parentNode.replaceChild(videoElement, videoFeed);
-                        } else if (videoFeed.tagName === 'VIDEO') {
-                            // Ensure video source is updated
-                            if (!videoFeed.src.includes('/video_feed')) {
-                                videoFeed.src = '/video_feed?' + new Date().getTime();
-                            }
-                        }
-                    } else {
-                        statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
-                        recognitionActive = false;
-                        
-                        // Replace video with placeholder if not active
-                        const videoFeed = document.getElementById('videoFeed');
-                        if (videoFeed.tagName === 'VIDEO') {
-                            const imgElement = document.createElement('img');
-                            imgElement.id = 'videoFeed';
-                            imgElement.className = 'video-feed';
-                            imgElement.src = 'static/icons/placeholder.jpg';
-                            imgElement.alt = 'Video feed';
-                            videoFeed.parentNode.replaceChild(imgElement, videoFeed);
-                        }
-                    }
-
-                    // Update camera status
-                    cameraStatusElement.textContent = data.camera_available === "available" 
-                        ? "✅ Camera Active" 
-                        : "❌ Camera Not Available";
-
-                    // Force refresh event listener if not active
-                    if (data.recognition_active && !window.facesEventSource) {
-                        setupSSEListener();
-                    }
-
-                    // Update last recognition time
-                    if (lastRecognitionElement && data.last_seen) {
-                        lastRecognitionElement.textContent = new Date(data.last_seen).toLocaleTimeString();
-                    }
-                })
-                .catch(error => console.error('Status update error:', error));
-        }
-
-        // Call updateStatusDisplay() every second to keep UI updated
-        setInterval(updateStatusDisplay, 1000);
-
-        function checkSystemStatus() {
-            fetch("/check_status")
-                .then(response => response.json())
-                .then(data => {
-                    console.log("System status:", data);
-                    recognitionActive = data.recognition_active;
-                    updateStatusDisplay();
-                })
-                .catch(error => {
-                    console.error("Status check failed:", error);
-                    showToast("Connection error. Retrying...", "error");
-                    setTimeout(checkSystemStatus, 3000);
-                });
-        }
-
-        function loadSystemStats() {
-            showToast('Loading system data...', 'info');
-            
-            // Use Promise.allSettled to handle multiple fetch requests
-            Promise.allSettled([
-                fetch('/get_known_users').then(response => {
-                    if (!response.ok) throw new Error(`Server returned ${response.status} for get_known_users`);
-                    return response.json();
-                }),
-                fetch('/get_today_attendance').then(response => {
-                    if (!response.ok) throw new Error(`Server returned ${response.status} for get_today_attendance`);
-                    return response.json();
-                })
-            ])
-            .then(results => {
-                // Handle users data
-                if (results[0].status === 'fulfilled' && results[0].value.success) {
-                    document.getElementById('totalEmployees').textContent = results[0].value.users.length;
-                } else {
-                    console.warn('Failed to load known users:', 
-                        results[0].status === 'rejected' ? results[0].reason : 'API reported failure');
-                    document.getElementById('totalEmployees').textContent = '?';
-                }
-                
-                // Handle attendance data
-                if (results[1].status === 'fulfilled' && results[1].value.success) {
-                    document.getElementById('todayAttendance').textContent = results[1].value.count;
-                } else {
-                    console.warn('Failed to load attendance:', 
-                        results[1].status === 'rejected' ? results[1].reason : 'API reported failure');
-                    document.getElementById('todayAttendance').textContent = '?';
-                }
-                
-                // Show success toast if at least one request succeeded
-                if (results.some(r => r.status === 'fulfilled')) {
-                    showToast('System data loaded', 'success');
-                } else {
-                    showToast('Error loading system data. Will retry shortly.', 'error');
-                    setTimeout(loadSystemStats, 5000);
-                }
-            });
-        }
-
-        function startRecognition() {
-            let startBtn = document.getElementById("startBtn");
-            if (startBtn.disabled) return;
-
-            startBtn.disabled = true;
-            document.getElementById("loadingOverlay").style.display = 'flex';
-            showToast("Starting face recognition...", "info");
-
-            fetch('/start_recognition', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById("loadingOverlay").style.display = 'none';
-                    if (data.success) {
-                        recognitionActive = true;
-                        showToast("Face recognition started!", "success");
-                        
-                        // Update video feed
-                        const videoFeed = document.getElementById('videoFeed');
-                        if (videoFeed.tagName === 'IMG') {
-                            // Replace img with video element
-                            const videoElement = document.createElement('video');
-                            videoElement.id = 'videoFeed';
-                            videoElement.className = 'video-feed';
-                            videoElement.autoplay = true;
-                            videoElement.src = '/video_feed?' + new Date().getTime();
-                            videoFeed.parentNode.replaceChild(videoElement, videoFeed);
-                        } else if (videoFeed.tagName === 'VIDEO') {
-                            // Ensure video source is updated
-                            videoFeed.src = '/video_feed?' + new Date().getTime();
-                        }
-                        
-                        // Ensure SSE connection is active
-                        setupSSEListener();
-                    } else {
-                        showToast("Recognition failed: " + data.status, "error");
-                    }
-                    startBtn.disabled = false;
-                })
-                .catch(error => {
-                    document.getElementById("loadingOverlay").style.display = 'none';
-                    console.error("Recognition start error:", error);
-                    showToast("Server error: " + error.message, "error");
-                    startBtn.disabled = false;
-                });
-        }
-
-        function stopRecognition() {
-            let startBtn = document.getElementById("startBtn");
-            showToast('⏹ Stopping recognition...', 'info');
-
-            fetch('/stop_recognition', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        showToast('✅ Recognition stopped successfully!', 'success');
-                        recognitionActive = false;
-                        startBtn.disabled = false;
-                        
-                        // Replace video with placeholder
-                        const videoFeed = document.getElementById('videoFeed');
-                        if (videoFeed.tagName === 'VIDEO') {
-                            const imgElement = document.createElement('img');
-                            imgElement.id = 'videoFeed';
-                            imgElement.className = 'video-feed';
-                            imgElement.src = '/static/icons/camera-placeholder.jpg';
-                            imgElement.alt = 'Video feed';
-                            videoFeed.parentNode.replaceChild(imgElement, videoFeed);
-                        }
-                    } else {
-                        showToast('Error: ' + data.status, 'error');
-                    }
-                })
-                .catch(error => {
-                    console.error('❌ Error stopping recognition:', error);
-                    showToast('Error: ' + error.message, 'error');
-                });
-        }
-
-        // Event listener for recognized faces using Server-Sent Events
-        function setupSSEListener() {
-            if (window.facesEventSource) {
-                window.facesEventSource.close();
-            }
-
-            window.facesEventSource = new EventSource("/recognized_faces");
-            
-            window.facesEventSource.addEventListener('message', (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.name) {
-                        document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
-                        speakMessage(`Hi ${data.name}`);
-                        showToast(`Recognized: ${data.name}`, "success");
-                        if (data.attendance_count !== undefined) {
-                            document.getElementById("todayAttendance").textContent = data.attendance_count;
-                        }
-                    }
-                } catch (error) {
-                    // Empty or invalid data, ignore
-                }
-            });
-
-            window.facesEventSource.addEventListener('error', (error) => {
-                console.error("SSE error:", error);
-                setTimeout(() => {
-                    setupSSEListener();
-                }, 5000);
-            });
-        }
-
-        // Implement a more robust heartbeat mechanism
-        function sendHeartbeat() {
-            fetch('/ping')
+            // First check if the page exists
+            fetch('/update', { method: 'HEAD' })
                 .then(response => {
-                    if (!response.ok) throw new Error(`Server returned ${response.status}`);
-                    return response.json();
-                })
-                .then(data => {
-                    console.log('Heartbeat successful');
-                    // Reset any error counters if needed
+                    if (response.ok) {
+                        window.location.href = '/update';
+                    } else {
+                        throw new Error(`Page not found (${response.status})`);
+                    }
                 })
                 .catch(error => {
-                    console.warn('Server heartbeat failed:', error);
-                    // Handle heartbeat failure - maybe try to reconnect SSE
-                    if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
-                        setupSSEListener();
-                    }
+                    console.error('Navigation error:', error);
+                    showToast('Error: Registration page not available. Please check the server.', 'error');
                 });
+            
+            return false; // Prevent default action
+        });
+    }
+    
+    // Set up SSE listener for recognized faces
+    setupSSEListener();
+    
+    // Initialize WebSocket connection
+    setupVideoStream();
+});
+
+function updateUptime() {
+    const now = new Date();
+    const uptimeHours = Math.floor((now - startTime) / (1000 * 60 * 60));
+    document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
+}
+
+function updateStatusDisplay() {
+    fetch('/check_status')
+        .then(response => {
+            if (!response.ok) throw new Error(`Server returned ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            // Update recognition status
+            const statusElement = document.getElementById('status');
+            const cameraStatusElement = document.getElementById('cameraStatus');
+            const lastRecognitionElement = document.getElementById('lastRecognition');
+
+            if (data.recognition_active) {
+                statusElement.innerHTML = '<span class="status-active">Active</span>';
+                recognitionActive = true;
+                
+                // Update video feed if active
+                updateVideoElement(true);
+            } else {
+                statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
+                recognitionActive = false;
+                
+                // Replace video with placeholder if not active
+                updateVideoElement(false);
+            }
+
+            // Update camera status
+            cameraStatusElement.textContent = data.camera_available === "available" 
+                ? "✅ Camera Active" 
+                : "❌ Camera Not Available";
+
+            // Force refresh event listener if not active
+            if (data.recognition_active && !window.facesEventSource) {
+                setupSSEListener();
+            }
+
+            // Update last recognition time
+            if (lastRecognitionElement && data.last_seen) {
+                lastRecognitionElement.textContent = new Date(data.last_seen).toLocaleTimeString();
+            }
+        })
+        .catch(error => console.error('Status update error:', error));
+}
+
+// Helper function to update video element
+function updateVideoElement(isActive) {
+    const videoFeed = document.getElementById('videoFeed');
+    if (!videoFeed) return;
+
+    if (isActive) {
+        if (videoFeed.tagName !== 'IMG') {
+            const imgElement = document.createElement('img');
+            imgElement.id = 'videoFeed';
+            imgElement.className = 'video-feed';
+            imgElement.src = '/static/icons/placeholder.webp';
+            videoFeed.parentNode.replaceChild(imgElement, videoFeed);
+            setTimeout(setupVideoStream, 100);
         }
+    } else {
+        if (videoFeed.tagName !== 'IMG') {
+            videoFeed.src = '/static/icons/placeholder.webp';
+        }
+    }
+}
 
-        // Send heartbeat every 30 seconds
-        setInterval(sendHeartbeat, 30000);
+// Call updateStatusDisplay() every 2 seconds to keep UI updated (less frequent for better performance)
+setInterval(updateStatusDisplay, 2000);
 
-        // Add window event listeners to handle page visibility changes
-        document.addEventListener('visibilitychange', function() {
-            if (document.visibilityState === 'visible') {
-                console.log('Page became visible - refreshing connection');
-                // Page is visible again, refresh data and connections
-                checkSystemStatus();
-                loadSystemStats();
-                if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
-                    setupSSEListener();
+let pc = null;
+
+    // 🛠️ Ensure Camera Permissions Before Starting WebRTC
+    async function checkCameraPermissions() {
+        const constraints = { video: true, audio: false };
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            console.log("✅ Camera stream obtained");
+            document.getElementById('videoFeed').srcObject = stream;
+        } catch (error) {
+            console.error("❌ Camera error:", error);
+            alert("Camera access is required for face recognition.");
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', checkCameraPermissions);
+
+    async function startWebRTC() {
+        await checkCameraPermissions();  // ✅ Ensure camera is accessible first
+
+        pc = new RTCPeerConnection();
+        const videoElement = document.getElementById('videoFeed');
+
+        pc.ontrack = (event) => {
+            videoElement.srcObject = event.streams[0];
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        const response = await fetch('/offer', {
+            method: 'POST',
+            body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const answer = await response.json();
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+    }
+
+    document.addEventListener('DOMContentLoaded', startWebRTC);
+
+// Improved WebSocket connection for video feed
+function setupVideoStream() {
+    if (!recognitionActive) {
+        console.warn("⚠️ Recognition not active. WebSocket will not connect.");
+        return;
+    }
+
+    if (currentWebSocket && currentWebSocket.readyState < 2) {
+        currentWebSocket.close(1000, "Intentional disconnect");
+    }
+
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/video`;
+
+    currentWebSocket = new WebSocket(wsUrl);
+    currentWebSocket.binaryType = "arraybuffer";
+
+    currentWebSocket.onopen = function () {
+        console.log("✅ WebSocket connected");
+        requestNextFrame();
+    };
+
+    currentWebSocket.onclose = function (event) {
+        console.warn("⚠️ WebSocket closed. Code:", event.code, "Reason:", event.reason);
+        if (recognitionActive) {
+            handleReconnection();
+        }
+    };
+
+    currentWebSocket.onerror = function (error) {
+        console.error("❌ WebSocket error:", error);
+    };
+}
+
+
+
+// Separate function to request frames
+function requestNextFrame() {
+    if (currentWebSocket && currentWebSocket.readyState === WebSocket.OPEN) {
+        try {
+            currentWebSocket.send(JSON.stringify({ action: "requestFrame" }));
+        } catch (err) {
+            console.error("Error requesting frame:", err);
+        }
+    }
+}
+
+// Improve reconnection handling
+function handleReconnection() {
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && recognitionActive) {
+        reconnectAttempts++;
+        // Exponential backoff
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+        console.log(`🔄 Reconnecting in ${reconnectDelay/1000} seconds... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+        
+        setTimeout(setupVideoStream, reconnectDelay);
+    } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.error("❌ Maximum reconnection attempts reached.");
+        showToast("Failed to connect to video stream after multiple attempts. Please refresh the page.", "error");
+    }
+}
+
+function checkSystemStatus() {
+    fetch("/check_status")
+        .then(response => {
+            if (!response.ok) throw new Error(`Server returned ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            console.log("System status:", data);
+            recognitionActive = data.recognition_active;
+            updateStatusDisplay();
+        })
+        .catch(error => {
+            console.error("Status check failed:", error);
+            showToast("Connection error. Retrying...", "error");
+            setTimeout(checkSystemStatus, 3000);
+        });
+}
+
+function loadSystemStats() {
+    showToast('Loading system data...', 'info');
+    
+    // Use Promise.all to handle multiple fetch requests
+    Promise.all([
+        fetch('/get_known_users')
+            .then(response => {
+                if (!response.ok) throw new Error(`Server returned ${response.status} for get_known_users`);
+                return response.json();
+            })
+            .catch(error => {
+                console.warn('Failed to load known users:', error);
+                return { success: false, error: error.message };
+            }),
+        fetch('/get_today_attendance')
+            .then(response => {
+                if (!response.ok) throw new Error(`Server returned ${response.status} for get_today_attendance`);
+                return response.json();
+            })
+            .catch(error => {
+                console.warn('Failed to load attendance:', error);
+                return { success: false, error: error.message };
+            })
+    ])
+    .then(([usersResponse, attendanceResponse]) => {
+        // Handle users data
+        if (usersResponse.success) {
+            document.getElementById('totalEmployees').textContent = usersResponse.users.length;
+        } else {
+            console.warn('Failed to load known users:', usersResponse.error || 'Unknown error');
+            document.getElementById('totalEmployees').textContent = '?';
+        }
+        
+        // Handle attendance data
+        if (attendanceResponse.success) {
+            document.getElementById('todayAttendance').textContent = attendanceResponse.count;
+        } else {
+            console.warn('Failed to load attendance:', attendanceResponse.error || 'Unknown error');
+            document.getElementById('todayAttendance').textContent = '?';
+        }
+        
+        // Show success toast if at least one request succeeded
+        if (usersResponse.success || attendanceResponse.success) {
+            showToast('System data loaded', 'success');
+        } else {
+            showToast('Error loading system data. Will retry shortly.', 'error');
+            setTimeout(loadSystemStats, 5000);
+        }
+    });
+}
+
+function startRecognition() {
+    let startBtn = document.getElementById("startBtn");
+    if (startBtn.disabled) return;
+
+    startBtn.disabled = true;
+    document.getElementById("loadingOverlay").style.display = 'flex';
+    showToast("Starting face recognition...", "info");
+
+    fetch('/start_recognition', { 
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ timestamp: Date.now() }) // Add timestamp to prevent caching
+    })
+    .then(response => {
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        return response.json();
+    })
+    .then(data => {
+        document.getElementById("loadingOverlay").style.display = 'none';
+        if (data.success) {
+            recognitionActive = true;
+            showToast("Face recognition started!", "success");
+            
+            // Update video feed
+            updateVideoElement(true);
+            
+            // Ensure SSE connection is active
+            setupSSEListener();
+            
+            // Reconnect WebSocket if needed
+            if (!currentWebSocket || currentWebSocket.readyState !== WebSocket.OPEN) {
+                setupVideoStream();
+            }
+        } else {
+            showToast("Recognition failed: " + (data.message || data.status || "Unknown error"), "error");
+        }
+        startBtn.disabled = false;
+    })
+    .catch(error => {
+        document.getElementById("loadingOverlay").style.display = 'none';
+        console.error("Recognition start error:", error);
+        showToast("Server error: " + error.message, "error");
+        startBtn.disabled = false;
+    });
+}
+
+function stopRecognition() {
+    let stopBtn = document.getElementById("stopBtn");
+    if (stopBtn.disabled) return;
+    
+    stopBtn.disabled = true;
+    showToast('⏹ Stopping recognition...', 'info');
+
+    fetch('/stop_recognition', { 
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ timestamp: Date.now() }) // Add timestamp to prevent caching
+    })
+    .then(response => {
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        return response.json();
+    })
+    .then(data => {
+        if (data.success) {
+            showToast('✅ Recognition stopped successfully!', 'success');
+            recognitionActive = false;
+            
+            // Replace video with placeholder
+            updateVideoElement(false);
+        } else {
+            showToast('Error: ' + (data.message || data.status || "Unknown error"), 'error');
+        }
+        stopBtn.disabled = false;
+    })
+    .catch(error => {
+        console.error('❌ Error stopping recognition:', error);
+        showToast('Error: ' + error.message, 'error');
+        stopBtn.disabled = false;
+    });
+}
+
+// Improved event listener for recognized faces using Server-Sent Events
+function setupSSEListener() {
+    // Close existing connection if any
+    if (window.facesEventSource) {
+        window.facesEventSource.close();
+        window.facesEventSource = null;
+    }
+
+    // Create new EventSource with a unique timestamp to prevent caching
+    window.facesEventSource = new EventSource("/recognized_faces?t=" + Date.now());
+    
+    window.facesEventSource.addEventListener('message', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            if (data.name) {
+                document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
+                speakMessage(`Hi ${data.name}`);
+                showToast(`Recognized: ${data.name}`, "success");
+                if (data.attendance_count !== undefined) {
+                    document.getElementById("todayAttendance").textContent = data.attendance_count;
                 }
             }
-        });
-
-        function showToast(message, type = 'success') {
-            const toast = document.getElementById('toast');
-            const toastMessage = document.getElementById('toastMessage');
-
-            if (!toast || !toastMessage) {
-                console.warn('Toast elements not found');
-                return;
-            }
-
-            if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
-
-            toastMessage.textContent = message;
-            toast.className = 'toast ' + type + ' show';
-
-            toast.hideTimeout = setTimeout(() => {
-                toast.className = 'toast ' + type;
-            }, 3000);
+        } catch (error) {
+            // Empty or invalid data, ignore
+            console.debug("Invalid SSE data received", error);
         }
+    });
 
-        window.addEventListener("beforeunload", function () {
-            // Clean up resources when leaving the page
-            if (window.facesEventSource) {
-                window.facesEventSource.close();
+    window.facesEventSource.addEventListener('error', (error) => {
+        console.error("SSE error:", error);
+        if (window.facesEventSource) {
+            window.facesEventSource.close();
+            window.facesEventSource = null;
+        }
+        
+        // Retry with increasing delay
+        const retryDelay = Math.min(5000 * (reconnectAttempts + 1), 30000);
+        setTimeout(() => {
+            if (document.visibilityState === 'visible') {
+                setupSSEListener();
             }
-        });
+        }, retryDelay);
+    });
+    
+    window.facesEventSource.addEventListener('open', () => {
+        console.log("SSE connection established");
+        reconnectAttempts = 0; // Reset on successful connection
+    });
+}
+
+// Implement a robust heartbeat mechanism with health check
+function sendHeartbeat() {
+    if (document.visibilityState !== 'visible') {
+        return; // Skip heartbeat if page is not visible
+    }
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    fetch('/ping', { 
+        signal: controller.signal,
+        headers: {
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
+        }
+    })
+    .then(response => {
+        clearTimeout(timeoutId);
+        if (!response.ok) throw new Error(`Server returned ${response.status}`);
+        return response.json();
+    })
+    .then(data => {
+        console.log('Heartbeat successful');
+        
+        // Check connection health
+        checkConnectionHealth();
+    })
+    .catch(error => {
+        if (error.name === 'AbortError') {
+            console.warn('Server heartbeat timed out');
+        } else {
+            console.warn('Server heartbeat failed:', error);
+        }
+        
+        // Attempt to restore connections
+        checkConnectionHealth();
+    });
+}
+
+// Check and restore all connections if needed
+function checkConnectionHealth() {
+    // Check SSE connection
+    if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
+        console.log('Restoring SSE connection');
+        setupSSEListener();
+    }
+    
+    // Check WebSocket connection
+    if (!currentWebSocket || currentWebSocket.readyState !== WebSocket.OPEN) {
+        console.log('Restoring WebSocket connection');
+        setupVideoStream();
+    }
+    
+    // Refresh system status if needed
+    if (document.visibilityState === 'visible') {
+        checkSystemStatus();
+    }
+}
+
+// Send heartbeat every 30 seconds
+const heartbeatInterval = setInterval(sendHeartbeat, 30000);
+
+// Add window event listeners to handle page visibility changes
+document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') {
+        console.log('Page became visible - refreshing connection');
+        // Page is visible again, refresh data and connections
+        checkSystemStatus();
+        loadSystemStats();
+        checkConnectionHealth();
+    }
+});
+
+// Improved toast notification system with queue
+const toastQueue = [];
+let toastActive = false;
+
+function showToast(message, type = 'success') {
+    // Add to queue
+    toastQueue.push({ message, type });
+    
+    // Process queue if not already processing
+    if (!toastActive) {
+        processToastQueue();
+    }
+}
+
+function processToastQueue() {
+    if (toastQueue.length === 0) {
+        toastActive = false;
+        return;
+    }
+    
+    toastActive = true;
+    const { message, type } = toastQueue.shift();
+    const toast = document.getElementById('toast');
+    const toastMessage = document.getElementById('toastMessage');
+
+    if (!toast || !toastMessage) {
+        console.warn('Toast elements not found');
+        toastActive = false;
+        return;
+    }
+
+    if (toast.hideTimeout) clearTimeout(toast.hideTimeout);
+
+    toastMessage.textContent = message;
+    toast.className = 'toast ' + type + ' show';
+
+    toast.hideTimeout = setTimeout(() => {
+        toast.className = 'toast ' + type;
+        // Process next toast after this one fades out
+        setTimeout(processToastQueue, 300);
+    }, 3000);
+}
+
+// Clean up all resources when the page is unloaded
+window.addEventListener("beforeunload", function () {
+    // Clear intervals
+    clearInterval(heartbeatInterval);
+    
+    // Close SSE connection
+    if (window.facesEventSource) {
+        window.facesEventSource.close();
+        window.facesEventSource = null;
+    }
+    
+    // Close WebSocket
+    if (currentWebSocket) {
+        currentWebSocket.close();
+        currentWebSocket = null;
+    }
+});
+
+// Add error handling for video element
+document.addEventListener('error', function(e) {
+    if (e.target.tagName === 'VIDEO') {
+        console.error('Video error:', e);
+        e.target.src = '/static/icons/placeholder.webp';
+        showToast('Video stream error. Will attempt to reconnect...', 'error');
+        
+        // Try to reconnect WebSocket
+        if (recognitionActive) {
+            setTimeout(setupVideoStream, 3000);
+        }
+    }
+}, true);
+
+// Optimize script loading
+window.addEventListener('load', function() {
+    // Run non-critical operations after page load
+    setTimeout(() => {
+        // Preload placeholder image
+        const placeholderImg = new Image();
+        placeholderImg.src = '/static/icons/placeholder.webp';
+    }, 1000);
+});
     </script>
 </body>
 </html>

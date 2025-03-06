@@ -757,6 +757,15 @@
             document.getElementById('capturedImagesContainer').innerHTML = '';
         }
         
+        function validateForm() {
+    let name = document.getElementById("employeeName").value.trim();
+    if (!name) {
+        alert("Employee name cannot be empty!");
+        return false;
+    }
+    return true;
+}
+
         function startCapture() {
             if (!employeeData.name) {
                 showToast('Employee name is required', 'error');
