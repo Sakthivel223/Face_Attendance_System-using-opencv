@@ -580,11 +580,7 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <img id="videoFeed" class="video-feed" src="" alt="Camera feed">
-            <script>
-                document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
-            </script>
-            
+            <video id="videoFeed" class="video-feed" autoplay playsinline></video>            
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Starting camera...</p>
@@ -663,7 +659,7 @@
         let capturedImages = [];
         
         // Check if static directory exists and create it if not
-        fetch('/static/icons/camera-placeholder.jpg')
+        fetch('/static/icons/placeholder.jpg')
             .catch(() => {
                 console.warn('Camera placeholder image not found. Using fallback.');
                 // We'll use a text placeholder instead
@@ -989,6 +985,13 @@
         window.addEventListener("beforeunload", function () {
             // Clean up resources when leaving the page
         });
+        function validateFacePosition() {
+    if (!faceCentered) {
+        showToast("Face not properly centered!", "error");
+        return false;
+    }
+    return true;
+}
     </script>
 </body>
 </html>

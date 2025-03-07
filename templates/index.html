@@ -409,15 +409,14 @@
         </div>
     </header>
     
-    <div class="container content">
-        <div class="video-container">
-            <video id="videoFeed" class="video-feed" autoplay playsinline></video>
-            <div class="loading-overlay" id="loadingOverlay">
-                <div class="spinner"></div>
-                <p>Initializing camera...</p>
-            </div>
+    <div class="video-container">
+        <video id="videoFeed" class="video-feed" autoplay playsinline></video>
+        <div class="loading-overlay" id="loadingOverlay">
+            <div class="spinner"></div>
+            <p>Initializing camera...</p>
         </div>
-        
+    </div>
+         
         <div class="panel">
             <h2><i class="fas fa-shield-alt"></i> System Status</h2>
             <p>Recognition Status: <span id="status" class="status-inactive">Stopped</span></p>
@@ -680,18 +679,41 @@ function updateVideoElement(isActive) {
 // Call updateStatusDisplay() every 2 seconds to keep UI updated (less frequent for better performance)
 setInterval(updateStatusDisplay, 2000);
 
-// WebRTC implementation for video streaming
+async function startRecognition() {
+    try {
+        recognitionActive = true;
+        console.log("Starting recognition...");
+
+        // Start the camera
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const videoElement = document.getElementById("videoFeed");
+        videoElement.srcObject = stream;
+
+        showToast("Camera started successfully!", "success");
+
+        // Wait briefly, then initialize WebRTC
+        setTimeout(() => {
+            initializeWebRTC();
+        }, 1000);
+
+    } catch (error) {
+        console.error("Error starting recognition:", error);
+        showToast("Failed to start camera", "error");
+    }
+}
+
+// WebRTC initialization function for video streaming
 async function initializeWebRTC() {
     if (!recognitionActive || isWebRTCInitializing) return;
-    
+
     isWebRTCInitializing = true;
-    
+
     try {
-        // Clean up any existing connections first
-        await closeWebRTCConnection();
-        
-        console.log("Starting WebRTC initialization...");
-        
+        console.log("🔄 Restarting WebRTC connection...");
+
+        // Ensure any existing connection is properly closed before starting a new one
+        await closeWebRTCConnection();  
+
         // Create a new RTCPeerConnection
         peerConnection = new RTCPeerConnection({
             iceServers: [
@@ -700,99 +722,83 @@ async function initializeWebRTC() {
             ],
             iceCandidatePoolSize: 10
         });
-        
-        // Queue for storing ICE candidates before remote description is set
-        iceCandidateQueue = [];
-        
+
+        iceCandidateQueue = []; // Reset ICE candidate queue
+
         // Handle ICE candidates
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                // Only send candidate if remote description is set, otherwise queue it
                 if (peerConnection.remoteDescription) {
                     sendIceCandidate(event.candidate);
                 } else {
                     iceCandidateQueue.push(event.candidate);
-                    console.log("Queued ICE candidate, remoteDescription not yet set");
+                    console.log("⏳ Queued ICE candidate, remoteDescription not yet set");
                 }
             }
         };
-        
-        // Handle incoming video stream
+
+        // Attach received video stream to the video element
         peerConnection.ontrack = event => {
             const videoElement = document.getElementById('videoFeed');
-            if (videoElement && videoElement.tagName === 'VIDEO') {
+            if (videoElement) {
                 videoElement.srcObject = event.streams[0];
-                console.log("Video track received and attached to video element");
+                console.log("✅ Video track received and attached to video element");
             }
         };
-        
-        // Handle connection state changes
+
+        // Handle connection state changes with a retry mechanism
         peerConnection.onconnectionstatechange = () => {
-            console.log(`Connection state changed: ${peerConnection.connectionState}`);
-            switch(peerConnection.connectionState) {
+            console.log(`🔄 WebRTC state changed: ${peerConnection.connectionState}`);
+            switch (peerConnection.connectionState) {
                 case "connected":
                     console.log("✅ WebRTC successfully connected");
-                    reconnectAttempts = 0; // Reset on successful connection
+                    reconnectAttempts = 0; // Reset reconnection attempts
                     break;
                 case "disconnected":
-                    console.log("WebRTC disconnected - will attempt recovery");
-                    break;
                 case "failed":
-                    console.log("WebRTC connection failed");
-                    handleWebRTCFailure();
+                    console.warn("⚠️ WebRTC disconnected. Retrying...");
+                    if (reconnectAttempts < 5) {
+                        reconnectAttempts++;
+                        setTimeout(initializeWebRTC, 2000 * reconnectAttempts); // Exponential backoff
+                    } else {
+                        console.error("❌ WebRTC reconnection failed after 5 attempts.");
+                    }
                     break;
                 case "closed":
-                    console.log("WebRTC connection closed");
+                    console.log("🔴 WebRTC connection closed");
                     break;
             }
         };
-        
-        // Handle ICE connection state changes
-        peerConnection.oniceconnectionstatechange = () => {
-            console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
-            if (peerConnection.iceConnectionState === 'failed') {
-                handleWebRTCFailure();
-            } else if (peerConnection.iceConnectionState === 'disconnected') {
-                // Try a lighter recovery for disconnected state
-                setTimeout(() => {
-                    if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
-                        console.log("Attempting to recover from ICE disconnected state...");
-                        peerConnection.restartIce();
-                    }
-                }, 2000);
-            }
-        };
-        
-        // Create the offer in proper sequence
+
+        // Create the WebRTC offer
         const offer = await peerConnection.createOffer({
             offerToReceiveVideo: true,
             offerToReceiveAudio: false
         });
-        
+
         await peerConnection.setLocalDescription(offer);
-        console.log("Local description set successfully");
-        
-        // Wait for ICE gathering to complete or timeout after 2 seconds
-        await Promise.race([
-            new Promise(resolve => {
-                const checkState = () => {
-                    if (peerConnection.iceGatheringState === 'complete') {
-                        resolve();
-                    } else {
-                        setTimeout(checkState, 100);
-                    }
-                };
-                checkState();
-            }),
-            new Promise(resolve => setTimeout(resolve, 2000))
-        ]);
-        
-        // Ensure we're in the right state for setting remote description
+        console.log("📡 Local description set successfully");
+
+        // Wait for ICE gathering to complete with adaptive timeout
+        let iceGatheringComplete = new Promise((resolve) => {
+            const checkState = () => {
+                if (peerConnection.iceGatheringState === 'complete') {
+                    resolve();
+                } else {
+                    setTimeout(checkState, 100);
+                }
+            };
+            checkState();
+        });
+
+        await Promise.race([iceGatheringComplete, new Promise(resolve => setTimeout(resolve, 5000))]);
+
+        // Ensure we are in the correct state before setting remote description
         if (peerConnection.signalingState !== "have-local-offer") {
-            console.warn(`Unexpected signaling state: ${peerConnection.signalingState}, expecting 'have-local-offer'`);
-            throw new Error("Incorrect signaling state for setting remote description");
+            console.warn(`⚠️ Unexpected signaling state: ${peerConnection.signalingState}, expecting 'have-local-offer'`);
+            throw new Error("Invalid signaling state for setting remote description");
         }
-        
+
         // Send the offer to the server and get the answer
         const response = await fetch('/webrtc/offer', {
             method: 'POST',
@@ -801,34 +807,33 @@ async function initializeWebRTC() {
                 sdp: peerConnection.localDescription.sdp,
                 type: peerConnection.localDescription.type
             }),
-            // Add timeout to fetch request
-            signal: AbortSignal.timeout(10000)
+            signal: AbortSignal.timeout(10000) // Prevents request from hanging
         });
-        
+
         if (!response.ok) {
-            throw new Error(`Server returned error: ${response.status}`);
+            throw new Error(`Server error: ${response.status}`);
         }
-        
+
         const serverAnswer = await response.json();
-        
-        // Double check signaling state before setting remote description
+
+        // Set the remote description
         if (peerConnection.signalingState === "have-local-offer") {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(serverAnswer));
-            console.log("Remote description set successfully");
-            
-            // Process any queued ICE candidates
+            console.log("✅ Remote description set successfully");
+
+            // Process queued ICE candidates
             while (iceCandidateQueue.length > 0) {
                 const candidate = iceCandidateQueue.shift();
                 await sendIceCandidate(candidate);
-                console.log("Processed queued ICE candidate");
+                console.log("📡 Processed queued ICE candidate");
             }
         } else {
-            console.warn(`Cannot set remote description in state: ${peerConnection.signalingState}`);
+            console.warn(`⚠️ Cannot set remote description in state: ${peerConnection.signalingState}`);
             throw new Error("Invalid state for setting remote description");
         }
-        
-        console.log("✅ WebRTC connection fully established");
-        
+
+        console.log("🎉 WebRTC connection fully established");
+
     } catch (error) {
         console.error('❌ WebRTC setup error:', error);
         handleWebRTCFailure();
@@ -837,45 +842,41 @@ async function initializeWebRTC() {
     }
 }
 
+function drawBoundingBox(data) {
+    const canvas = document.getElementById("videoCanvas");
+    const ctx = canvas.getContext("2d");
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.strokeStyle = data.name === "Unknown" ? "red" : "green";
+    ctx.lineWidth = 3;
+    ctx.strokeRect(data.left, data.top, data.right - data.left, data.bottom - data.top);
+}
+
 // Function to send ICE candidate to server
 async function sendIceCandidate(candidate) {
-    // If remote description isn't set yet, queue the candidate
-    if (!peerConnection || !peerConnection.remoteDescription) {
-        console.log("Queuing ICE candidate, remoteDescription not set");
-        iceCandidateQueue.push(candidate);
-        return;
-    }
-    
-    // Try to send the candidate with retry logic
-    let attempts = 0;
-    const maxAttempts = 3;
-    
-    while (attempts < maxAttempts) {
-        try {
-            const response = await fetch('/webrtc/ice_candidate', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(candidate),
-                signal: AbortSignal.timeout(5000) // 5 second timeout
-            });
-            
-            if (response.ok) {
-                return; // Success
-            }
-            
-            console.warn(`Failed to send ICE candidate, status: ${response.status}`);
-        } catch (error) {
-            console.warn(`Error sending ICE candidate (attempt ${attempts + 1}/${maxAttempts}):`, error);
+    if (!candidate) return;
+
+    const candidateData = {
+        candidate: candidate.candidate,
+        sdpMid: candidate.sdpMid,
+        sdpMLineIndex: candidate.sdpMLineIndex
+    };
+
+    try {
+        const response = await fetch('/webrtc/ice_candidate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(candidateData)
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to send ICE candidate, status: ${response.status}`);
         }
-        
-        attempts++;
-        if (attempts < maxAttempts) {
-            // Wait before retry
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
+        console.log("✅ ICE candidate sent successfully");
+    } catch (error) {
+        console.error("❌ Error sending ICE candidate:", error);
     }
-    
-    console.error("Failed to send ICE candidate after multiple attempts");
 }
 
 
@@ -1135,6 +1136,33 @@ function startRecognition() {
     });
 }
 
+function setupWebRTC() {
+    let pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    });
+
+    pc.ontrack = event => {
+        document.getElementById("videoFeed").srcObject = event.streams[0];
+    };
+
+    fetch("/webrtc/offer", { method: "POST" })
+        .then(response => response.json())
+        .then(async data => {
+            await pc.setRemoteDescription(new RTCSessionDescription(data));
+            let answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            return fetch("/webrtc/answer", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    sdp: pc.localDescription.sdp,
+                    type: pc.localDescription.type
+                })
+            });
+        })
+        .catch(error => console.error("WebRTC error:", error));
+}
 function stopRecognition() {
     let stopBtn = document.getElementById("stopBtn");
     if (stopBtn.disabled) return;

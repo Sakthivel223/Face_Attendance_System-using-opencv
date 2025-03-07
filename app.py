@@ -207,172 +207,88 @@ camera = None
 
 @app.post("/webrtc/ice_candidate")
 async def ice_candidate(request: Request):
+    """Processes WebRTC ICE candidates safely."""
     try:
         data = await request.json()
+        
+        # Ensure candidate data is received correctly
+        if not isinstance(data, dict):
+            return JSONResponse(content={"error": "Invalid ICE candidate data format"}, status_code=400)
+
         candidate = data.get("candidate")
         sdp_mid = data.get("sdpMid")
         sdp_m_line_index = data.get("sdpMLineIndex")
-        connection_id = data.get("connectionId")
-        
-        # Find the appropriate peer connection
-        target_pc = None
+
+        if not candidate or not sdp_mid or sdp_m_line_index is None:
+            return JSONResponse(content={"error": "Missing ICE candidate fields"}, status_code=400)
+
+        # Ensure the ICE candidate is handled properly
         for pc in peer_connections:
-            if id(pc) == connection_id:
-                target_pc = pc
-                break
-        
-        if target_pc and candidate:
-            candidate_obj = RTCIceCandidate(
-                component=candidate.get("component", 0),
-                foundation=candidate.get("foundation", ""),
-                ip=candidate.get("ip", ""),
-                port=candidate.get("port", 0),
-                priority=candidate.get("priority", 0),
-                protocol=candidate.get("protocol", ""),
-                type=candidate.get("type", ""),
+            ice_candidate = RTCIceCandidate(
+                candidate=candidate,
                 sdpMid=sdp_mid,
                 sdpMLineIndex=sdp_m_line_index
             )
-            await target_pc.addIceCandidate(candidate_obj)
-            return {"success": True}
-        else:
-            return {"success": False, "error": "No matching connection found or invalid candidate"}
+            await pc.addIceCandidate(ice_candidate)
+
+        return {"success": True}
+
     except Exception as e:
-        print(f"Error processing ICE candidate: {str(e)}")
-        traceback.print_exc()
-        return JSONResponse(content={"error": str(e)}, status_code=500)    
-    
+        print(f"❌ Error processing ICE candidate: {str(e)}")
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
 # Store active peer connections
 peer_connections = set()
 
 class CustomVideoStreamTrack(VideoStreamTrack):
-    """
-    A video track that returns camera frames for WebRTC streaming.
-    """
+    """WebRTC video track for sending frames to the frontend."""
     def __init__(self):
-        super().__init__()  # don't forget this!
-        self.counter = 0
-        self.frames = 0
-        self.cap = None
-        try:
-            self.cap = cv2.VideoCapture(0)  # Use camera index 0 (default camera)
-            if not self.cap.isOpened():
-                raise Exception("Could not open video device")
-            # Set camera properties for better performance
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            print("Camera initialized for WebRTC streaming")
-        except Exception as e:
-            print(f"Error initializing camera for WebRTC: {str(e)}")
-    
+        super().__init__()
+        self.cap = cv2.VideoCapture(0)
+
+        if not self.cap.isOpened():
+            print("❌ ERROR: Camera could not be opened")
+            raise Exception("Camera initialization failed")
+
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FPS, 30)
+
     async def recv(self):
-        self.frames += 1
-        
-        # If we have a camera, use it
-        if self.cap and self.cap.isOpened():
+        """Capture and send a video frame."""
+        try:
             ret, frame = self.cap.read()
             if not ret:
-                # If camera read fails, create a blank frame
-                img = np.zeros((480, 640, 3), dtype=np.uint8)
-                # Add text showing camera error
-                cv2.putText(img, "Camera Error", (220, 240), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            else:
-                # Convert from BGR to RGB
-                img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        else:
-            # Create a blank frame with message if no camera
-            img = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(img, "No Camera Available", (180, 240), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        
-        # Convert to video frame
-        video_frame = av.VideoFrame.from_ndarray(img, format="rgb24")
-        video_frame.pts = self.counter
-        video_frame.time_base = fractions.Fraction(1, 30)  # 30fps
-        
-        self.counter += 1
-        return video_frame    
-    
-    def __del__(self):
-        if self.cap and self.cap.isOpened():
-            self.cap.release()
-            print("WebRTC camera released")
+                print("❌ WARNING: Could not read frame from camera")
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)  # Blank frame fallback
+
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            video_frame = av.VideoFrame.from_ndarray(frame, format="rgb24")
+            return video_frame
+
+        except Exception as e:
+            print(f"❌ ERROR in video frame processing: {str(e)}")
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            return av.VideoFrame.from_ndarray(frame, format="rgb24")
 
 @app.post("/webrtc/offer")
 async def offer(request: Request):
-    pc = None
-    try:
-        # Parse the request body
-        request_data = await request.json()
-        
-        # Create a new RTCPeerConnection
-        pc = RTCPeerConnection()
-        peer_connections.add(pc)
-        
-        # Add cleanup callback when connection closes
-        @pc.on("connectionstatechange")
-        async def on_connectionstatechange():
-            if pc.connectionState == "failed" or pc.connectionState == "closed":
-                if pc in peer_connections:
-                    peer_connections.discard(pc)
-                    print(f"WebRTC connection closed, remaining connections: {len(peer_connections)}")
-        
-        # Add video track BEFORE processing the offer
-        video_track = CustomVideoStreamTrack()
-        pc.addTrack(video_track)
-        
-        # Process the offer
-        offer = RTCSessionDescription(sdp=request_data["sdp"], type=request_data["type"])
-        await pc.setRemoteDescription(offer)
-        
-        # Create answer
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        
-        # Wait for ICE gathering to complete
-        while pc.iceGatheringState != "complete":
-            await asyncio.sleep(0.1)
-        
-        # Return the answer with complete ICE candidates
-        return JSONResponse(content={
-            "sdp": pc.localDescription.sdp,
-            "type": pc.localDescription.type
-        })
-        
-    except Exception as e:
-        print(f"Error in WebRTC setup: {str(e)}")
-        traceback.print_exc()
-        # Clean up if there was an error
-        if pc and pc in peer_connections:
-            peer_connections.discard(pc)
-            await pc.close()
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-            
-@app.get("/video_feed")
-async def video_feed():
-    """Fallback HTTP video stream if WebRTC fails"""
-    async def generate():
-        while recognition_active:
-            # Get the latest frame
-            frame_data = get_latest_frame()
-            if frame_data:
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_data + b'\r\n')
-            else:
-                # If no frame is available, yield an empty frame
-                empty_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(empty_frame, "No Camera Feed", (180, 240), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                _, buffer = cv2.imencode('.jpg', empty_frame)
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-            
-            await asyncio.sleep(0.1)
+    """Handles WebRTC offer from the frontend."""
+    pc = RTCPeerConnection()
+    peer_connections.add(pc)
 
-    return StreamingResponse(generate(), media_type='multipart/x-mixed-replace; boundary=frame')
+    video_track = CustomVideoStreamTrack()
+    pc.addTrack(video_track)
 
+    request_data = await request.json()
+    offer = RTCSessionDescription(sdp=request_data["sdp"], type=request_data["type"])
+    await pc.setRemoteDescription(offer)
+
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return JSONResponse(content={"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+            
 def setup_logging():
     """Set up proper logging for the application."""
     log_dir = "logs"
@@ -418,33 +334,27 @@ frame_buffer_lock = threading.Lock()
 
 # Add before face recognition to improve accuracy
 def align_face(image, face_location):
-    try:
-        # Get facial landmarks
-        landmarks = face_recognition.face_landmarks(image, [face_location])[0]
-        
-        # Use eye landmarks for alignment
-        left_eye = np.mean(landmarks['left_eye'], axis=0)
-        right_eye = np.mean(landmarks['right_eye'], axis=0)
-        
-        # Calculate angle
-        dY = right_eye[1] - left_eye[1]
-        dX = right_eye[0] - left_eye[0]
-        angle = np.degrees(np.arctan2(dY, dX))
-        
-        # Rotate image
-        (h, w) = image.shape[:2]
-        center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        aligned_image = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC)
-        
-        return aligned_image
-    except Exception:
-        # Return original image if alignment fails
-        return image
+    """Aligns the face based on eye positions for better recognition."""
+    landmarks = face_recognition.face_landmarks(image, [face_location])[0]
+    left_eye = np.mean(landmarks['left_eye'], axis=0)
+    right_eye = np.mean(landmarks['right_eye'], axis=0)
+    
+    # Calculate rotation angle
+    dY = right_eye[1] - left_eye[1]
+    dX = right_eye[0] - left_eye[0]
+    angle = np.degrees(np.arctan2(dY, dX))
+    
+    # Rotate the image
+    center = ((face_location[3] + face_location[1]) // 2, (face_location[2] + face_location[0]) // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    aligned_image = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
+    
+    return aligned_image
     
 # Frame buffer for streaming video
 frame_buffer = None  # Store just the latest frame
 frame_buffer_lock = threading.Lock()
+
 
 def update_frame_buffer(frame_bytes):
     """Updates the global frame buffer with the latest frame bytes"""
@@ -519,39 +429,26 @@ def get_recognition_events():
     with recognition_events_lock:
         return list(recognition_events)
 
-def save_to_excel(excel_file, date, name, entry_time, exit_time):
-    if not os.path.exists(EXCEL_LOG_PATH):
-        os.makedirs(EXCEL_LOG_PATH)
+def save_to_excel(date, name, entry_time, exit_time):
+    month_year = datetime.datetime.now().strftime('%B-%Y')
+    excel_file = os.path.join(EXCEL_LOG_PATH, f"{month_year}.xlsx")
 
-    for attempt in range(5):  # Retry up to 5 times
-        try:
-            if os.path.exists(excel_file):
-                df = pd.read_excel(excel_file, engine="openpyxl")
-            else:
-                df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
+    if os.path.exists(excel_file):
+        df = pd.read_excel(excel_file, engine="openpyxl")
+    else:
+        df = pd.DataFrame(columns=["Date", "Name", "Entry Time", "Exit Time"])
 
-            df["Exit Time"] = df["Exit Time"].astype(str)  
-            
-            existing_entry = df[(df["Date"] == date) & (df["Name"] == name)]
-            
-            if existing_entry.empty:
-                new_row = pd.DataFrame({"Date": [date], "Name": [name], "Entry Time": [entry_time], "Exit Time": [""]})
-                df = pd.concat([df, new_row], ignore_index=True)
-            else:
-                df.loc[(df["Date"] == date) & (df["Name"] == name), "Exit Time"] = str(exit_time)
+    existing_entry = df[(df["Date"] == date) & (df["Name"] == name)]
 
-            with pd.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
-                df.to_excel(writer, index=False)
+    if existing_entry.empty:
+        df = df.append({"Date": date, "Name": name, "Entry Time": entry_time, "Exit Time": ""}, ignore_index=True)
+    else:
+        df.loc[(df["Date"] == date) & (df["Name"] == name), "Exit Time"] = exit_time
 
-            print(f"✅ Excel updated: {excel_file}")
-            return True
+    with pd.ExcelWriter(excel_file, engine="openpyxl", mode="w") as writer:
+        df.to_excel(writer, index=False)
 
-        except PermissionError:
-            print(f"⚠️ File locked. Retrying... (Attempt {attempt + 1})")
-            time.sleep(1)
-
-    print("❌ Unable to update Excel after multiple attempts.")
-    return False
+    print(f"✅ Excel updated: {excel_file}")
 
 # Function to update Excel attendance log
 def update_excel_log(name, is_exit=False):
@@ -714,12 +611,34 @@ async def start_recognition():
     
     return JSONResponse(status_code=200, content={"success": True, "status": "Face recognition started"})
 
+def log_unknown_face(face_image):
+    unknown_path = "UnknownFaces"
+    if not os.path.exists(unknown_path):
+        os.makedirs(unknown_path)
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(unknown_path, f"unknown_{timestamp}.jpg")
+
+    cv2.imwrite(filename, face_image)
+    print(f"⚠️ Unknown face saved: {filename}")
+
+def send_faces_to_frontend(detected_faces):
+    try:
+        # Convert face data to JSON and send via WebRTC or SSE
+        face_data = json.dumps({"faces": detected_faces})
+        for connection in active_sse_connections:
+            asyncio.create_task(connection.send(face_data))
+    except Exception as e:
+        print(f"❌ Error sending face data to frontend: {str(e)}")
+
 async def process_face_recognition():
     global recognition_active, camera
 
     try:
         if not known_face_encodings or not known_face_names:
             load_known_faces()
+
+        frame_count = 0  # Used for frame skipping
 
         while recognition_active:
             with camera_lock:
@@ -732,48 +651,62 @@ async def process_face_recognition():
                 if not ret or frame is None or frame.size == 0:
                     await asyncio.sleep(0.1)
                     continue
-                
-                # Make a deep copy of the frame before releasing the lock
+
+                # Make a deep copy before releasing lock
                 current_frame = frame.copy()
-            
-            # Process the frame outside the lock
+
+            # Skip frames to improve performance (e.g., detect faces every 2nd frame)
+            frame_count += 1
+            if frame_count % 2 != 0:  
+                continue
+
+            # Convert frame to RGB for face detection
             rgb_frame = cv2.cvtColor(current_frame, cv2.COLOR_BGR2RGB)
-            face_locations = face_recognition.face_locations(rgb_frame, model="hog")
-            
-            # Draw rectangles for recognized faces when matches found
-            if len(face_locations) > 0:
-                face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
-                
-                # Process each detected face
+
+            # Detect faces
+            face_locations = face_recognition.face_locations(rgb_frame, model="hog")  # Use "cnn" for GPU acceleration
+            face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+            detected_faces = []  # Store bounding box and name
+
+            if len(face_encodings) > 0:
                 for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
-                    # Compare with known faces
-                    matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=CONFIDENCE_THRESHOLD)
+                    
+                    # Compare with known faces using distance first
+                    face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                    best_match_index = np.argmin(face_distances)
+
                     name = "Unknown"
-                    
-                    if True in matches:  # If there's at least one match
-                        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
-                        best_match_index = np.argmin(face_distances)
-                        if matches[best_match_index]:
-                            name = known_face_names[best_match_index]
-                            
-                            # Update attendance log
-                            update_excel_log(name)
-                    
-                    # Draw rectangle and name
-                    cv2.rectangle(current_frame, (left, top), (right, bottom), (0, 255, 0), 2)
-                    cv2.putText(current_frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
-            
-            # Add status text for better feedback
+                    if face_distances[best_match_index] < CONFIDENCE_THRESHOLD:
+                        name = known_face_names[best_match_index]
+
+                        # Log attendance for known faces
+                        update_excel_log(name)
+                    else:
+                        log_unknown_face(rgb_frame[top:bottom, left:right])
+
+                    # Add to detected faces list
+                    detected_faces.append({"top": top, "right": right, "bottom": bottom, "left": left, "name": name})
+
+                    # Draw bounding box (Green for known, Red for unknown)
+                    color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                    cv2.rectangle(current_frame, (left, top), (right, bottom), color, 2)
+                    cv2.putText(current_frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, color, 2)
+
+            # Send detected faces data to frontend (bounding boxes)
+            send_faces_to_frontend(detected_faces)
+
+            # Add system status text
             cv2.putText(current_frame, f"Recognition Active - {len(known_face_names)} known faces", 
-                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 120, 255), 2)
-                
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 120, 255), 2)
+
             # Convert frame to JPEG for streaming
             _, jpeg = cv2.imencode('.jpg', current_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             jpeg_binary = jpeg.tobytes()
-            
-            # Update the frame buffer for streaming
+
+            # Update frame buffer for WebRTC streaming
             update_frame_buffer(jpeg_binary)
-            
+
             # Control frame rate
             await asyncio.sleep(DETECTION_INTERVAL)
 
@@ -782,6 +715,7 @@ async def process_face_recognition():
     except Exception as e:
         print(f"❌ Error in face recognition: {str(e)}")
         traceback.print_exc()
+
     finally:
         recognition_active = False
 
