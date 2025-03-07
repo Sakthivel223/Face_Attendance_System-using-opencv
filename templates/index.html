@@ -479,6 +479,9 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 let reconnectDelay = 5000; // Start with 5 seconds, will increase with backoff
 let currentWebSocket = null;
 let peerConnection = null;
+let iceCandidateQueue = [];
+let isWebRTCInitializing = false;
+
 
 // Initialize the Web Speech API
 const synth = window.speechSynthesis || null;
@@ -608,35 +611,68 @@ function updateStatusDisplay() {
 
 // Helper function to update video element
 function updateVideoElement(isActive) {
+    const videoContainer = document.querySelector('.video-container');
     const videoFeed = document.getElementById('videoFeed');
-    if (!videoFeed) return;
+    if (!videoFeed || !videoContainer) return;
 
     if (isActive) {
+        // Show loading overlay while initializing
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.style.display = 'flex';
+        }
+
         if (videoFeed.tagName !== 'VIDEO') {
             const videoElement = document.createElement('video');
             videoElement.id = 'videoFeed';
             videoElement.className = 'video-feed';
             videoElement.autoplay = true;
             videoElement.playsInline = true;
+            
+            // Add error handler
+            videoElement.onerror = (e) => {
+                console.error('Video element error:', e);
+                if (recognitionActive && !isWebRTCInitializing) {
+                    handleWebRTCFailure();
+                }
+            };
+            
             videoFeed.parentNode.replaceChild(videoElement, videoFeed);
             
-            // Initialize WebRTC if video is active
-            if (peerConnection === null || peerConnection.connectionState === 'closed') {
-                initializeWebRTC();
+            // Initialize WebRTC if video is active and not already initializing
+            if (!isWebRTCInitializing) {
+                setTimeout(() => {
+                    initializeWebRTC().then(() => {
+                        if (loadingOverlay) {
+                            loadingOverlay.style.display = 'none';
+                        }
+                    }).catch(() => {
+                        if (loadingOverlay) {
+                            loadingOverlay.style.display = 'none';
+                        }
+                    });
+                }, 500);
             }
         }
     } else {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        if (loadingOverlay) {
+            loadingOverlay.style.display = 'none';
+        }
+        
+        // Close any active connections first
+        closeWebRTCConnection();
+        
         if (videoFeed.tagName === 'VIDEO') {
             const imgElement = document.createElement('img');
             imgElement.id = 'videoFeed';
             imgElement.className = 'video-feed';
             imgElement.src = '/static/icons/placeholder.webp';
+            imgElement.alt = 'Video feed placeholder';
             videoFeed.parentNode.replaceChild(imgElement, videoFeed);
-            
-            // Close WebRTC connection if video is inactive
-            closeWebRTCConnection();
         } else if (videoFeed.tagName === 'IMG') {
             videoFeed.src = '/static/icons/placeholder.webp';
+            videoFeed.alt = 'Video feed placeholder';
         }
     }
 }
@@ -646,154 +682,297 @@ setInterval(updateStatusDisplay, 2000);
 
 // WebRTC implementation for video streaming
 async function initializeWebRTC() {
-    if (!recognitionActive) return;
+    if (!recognitionActive || isWebRTCInitializing) return;
     
-    // Close existing connection if any
-    await closeWebRTCConnection();
+    isWebRTCInitializing = true;
     
     try {
-        // Create new RTCPeerConnection
-        const iceServers = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ];
+        // Clean up any existing connections first
+        await closeWebRTCConnection();
         
-        peerConnection = new RTCPeerConnection({ iceServers });
+        console.log("Starting WebRTC initialization...");
         
-        // Set up event handlers
+        // Create a new RTCPeerConnection
+        peerConnection = new RTCPeerConnection({
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ],
+            iceCandidatePoolSize: 10
+        });
+        
+        // Queue for storing ICE candidates before remote description is set
+        iceCandidateQueue = [];
+        
+        // Handle ICE candidates
         peerConnection.onicecandidate = event => {
             if (event.candidate) {
-                sendIceCandidate(event.candidate);
+                // Only send candidate if remote description is set, otherwise queue it
+                if (peerConnection.remoteDescription) {
+                    sendIceCandidate(event.candidate);
+                } else {
+                    iceCandidateQueue.push(event.candidate);
+                    console.log("Queued ICE candidate, remoteDescription not yet set");
+                }
             }
         };
         
+        // Handle incoming video stream
         peerConnection.ontrack = event => {
             const videoElement = document.getElementById('videoFeed');
             if (videoElement && videoElement.tagName === 'VIDEO') {
                 videoElement.srcObject = event.streams[0];
-                videoElement.onloadedmetadata = () => {
-                    videoElement.play().catch(err => console.error('Error playing video:', err));
-                };
+                console.log("Video track received and attached to video element");
             }
         };
         
+        // Handle connection state changes
+        peerConnection.onconnectionstatechange = () => {
+            console.log(`Connection state changed: ${peerConnection.connectionState}`);
+            switch(peerConnection.connectionState) {
+                case "connected":
+                    console.log("✅ WebRTC successfully connected");
+                    reconnectAttempts = 0; // Reset on successful connection
+                    break;
+                case "disconnected":
+                    console.log("WebRTC disconnected - will attempt recovery");
+                    break;
+                case "failed":
+                    console.log("WebRTC connection failed");
+                    handleWebRTCFailure();
+                    break;
+                case "closed":
+                    console.log("WebRTC connection closed");
+                    break;
+            }
+        };
+        
+        // Handle ICE connection state changes
         peerConnection.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', peerConnection.iceConnectionState);
-            if (peerConnection.iceConnectionState === 'failed' || 
-                peerConnection.iceConnectionState === 'disconnected') {
-                // Try to reconnect after a delay
+            console.log(`ICE connection state: ${peerConnection.iceConnectionState}`);
+            if (peerConnection.iceConnectionState === 'failed') {
+                handleWebRTCFailure();
+            } else if (peerConnection.iceConnectionState === 'disconnected') {
+                // Try a lighter recovery for disconnected state
                 setTimeout(() => {
-                    if (recognitionActive) {
-                        initializeWebRTC();
+                    if (peerConnection && peerConnection.iceConnectionState === 'disconnected') {
+                        console.log("Attempting to recover from ICE disconnected state...");
+                        peerConnection.restartIce();
                     }
                 }, 2000);
             }
         };
         
-        // Create and send offer
+        // Create the offer in proper sequence
         const offer = await peerConnection.createOffer({
             offerToReceiveVideo: true,
             offerToReceiveAudio: false
         });
         
         await peerConnection.setLocalDescription(offer);
+        console.log("Local description set successfully");
         
-        // Send offer to server
+        // Wait for ICE gathering to complete or timeout after 2 seconds
+        await Promise.race([
+            new Promise(resolve => {
+                const checkState = () => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        setTimeout(checkState, 100);
+                    }
+                };
+                checkState();
+            }),
+            new Promise(resolve => setTimeout(resolve, 2000))
+        ]);
+        
+        // Ensure we're in the right state for setting remote description
+        if (peerConnection.signalingState !== "have-local-offer") {
+            console.warn(`Unexpected signaling state: ${peerConnection.signalingState}, expecting 'have-local-offer'`);
+            throw new Error("Incorrect signaling state for setting remote description");
+        }
+        
+        // Send the offer to the server and get the answer
         const response = await fetch('/webrtc/offer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 sdp: peerConnection.localDescription.sdp,
                 type: peerConnection.localDescription.type
-            })
+            }),
+            // Add timeout to fetch request
+            signal: AbortSignal.timeout(10000)
         });
         
         if (!response.ok) {
-            throw new Error(`Server returned ${response.status}`);
+            throw new Error(`Server returned error: ${response.status}`);
         }
         
         const serverAnswer = await response.json();
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(serverAnswer));
         
-        console.log('✅ WebRTC connection established');
-        cameraInitialized = true;
-        reconnectAttempts = 0;
+        // Double check signaling state before setting remote description
+        if (peerConnection.signalingState === "have-local-offer") {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(serverAnswer));
+            console.log("Remote description set successfully");
+            
+            // Process any queued ICE candidates
+            while (iceCandidateQueue.length > 0) {
+                const candidate = iceCandidateQueue.shift();
+                await sendIceCandidate(candidate);
+                console.log("Processed queued ICE candidate");
+            }
+        } else {
+            console.warn(`Cannot set remote description in state: ${peerConnection.signalingState}`);
+            throw new Error("Invalid state for setting remote description");
+        }
+        
+        console.log("✅ WebRTC connection fully established");
         
     } catch (error) {
         console.error('❌ WebRTC setup error:', error);
-        
-        // Increment reconnect attempts
-        reconnectAttempts++;
-        
-        // Exponential backoff for reconnection
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && recognitionActive) {
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            console.log(`🔄 WebRTC reconnecting in ${delay/1000} seconds... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-            
-            setTimeout(() => {
-                if (recognitionActive) {
-                    initializeWebRTC();
-                }
-            }, delay);
-        } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            showToast('Failed to establish video stream after multiple attempts', 'error');
-        }
+        handleWebRTCFailure();
+    } finally {
+        isWebRTCInitializing = false;
     }
 }
 
 // Function to send ICE candidate to server
 async function sendIceCandidate(candidate) {
-    try {
-        await fetch('/webrtc/ice_candidate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(candidate)
-        });
-    } catch (error) {
-        console.error('Error sending ICE candidate:', error);
+    // If remote description isn't set yet, queue the candidate
+    if (!peerConnection || !peerConnection.remoteDescription) {
+        console.log("Queuing ICE candidate, remoteDescription not set");
+        iceCandidateQueue.push(candidate);
+        return;
     }
-}
-
-// Function to handle ICE candidates from server
-async function handleRemoteIceCandidate(candidate) {
-    if (peerConnection && peerConnection.remoteDescription) {
+    
+    // Try to send the candidate with retry logic
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (attempts < maxAttempts) {
         try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            const response = await fetch('/webrtc/ice_candidate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(candidate),
+                signal: AbortSignal.timeout(5000) // 5 second timeout
+            });
+            
+            if (response.ok) {
+                return; // Success
+            }
+            
+            console.warn(`Failed to send ICE candidate, status: ${response.status}`);
         } catch (error) {
-            console.error('Error adding ICE candidate:', error);
+            console.warn(`Error sending ICE candidate (attempt ${attempts + 1}/${maxAttempts}):`, error);
+        }
+        
+        attempts++;
+        if (attempts < maxAttempts) {
+            // Wait before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
         }
     }
+    
+    console.error("Failed to send ICE candidate after multiple attempts");
 }
 
-// Function to close WebRTC connection
+
+function handleWebRTCFailure() {
+    reconnectAttempts++;
+    
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        console.error(`WebRTC connection failed after ${MAX_RECONNECT_ATTEMPTS} attempts`);
+        showToast("Video connection failed. Please refresh the page or try again later.", "error");
+        return;
+    }
+    
+    // Exponential backoff with jitter
+    const baseDelay = 1000; // 1 second
+    const maxDelay = 30000; // 30 seconds max
+    const exponentialDelay = Math.min(baseDelay * Math.pow(2, reconnectAttempts - 1), maxDelay);
+    // Add some randomness to prevent reconnection thundering herd
+    const jitter = Math.random() * 1000;
+    const delay = exponentialDelay + jitter;
+    
+    console.log(`🔄 WebRTC reconnecting in ${Math.round(delay / 1000)} seconds... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+    
+    setTimeout(() => {
+        if (recognitionActive) {
+            initializeWebRTC();
+        }
+    }, delay);
+}
+
+// Improved function to handle ICE candidates from server
+async function handleRemoteIceCandidate(candidate) {
+    if (!peerConnection) return;
+    
+    try {
+        if (peerConnection.remoteDescription) {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+        } else {
+            // Queue the candidate for later
+            iceCandidateQueue.push(candidate);
+            console.log("Queued remote ICE candidate, remoteDescription not set yet");
+        }
+    } catch (error) {
+        console.error('Error adding remote ICE candidate:', error);
+    }
+}
+
+// More robust function to close WebRTC connection
 async function closeWebRTCConnection() {
-    if (peerConnection) {
-        // Close existing tracks
+    if (!peerConnection) return;
+    
+    try {
+        // Clean up any existing tracks
         peerConnection.getSenders().forEach(sender => {
             if (sender.track) {
                 sender.track.stop();
             }
         });
         
-        // Close connection
+        // Stop all receivers
+        peerConnection.getReceivers().forEach(receiver => {
+            if (receiver.track) {
+                receiver.track.stop();
+            }
+        });
+        
+        // Clean up video element
+        const videoElement = document.getElementById('videoFeed');
+        if (videoElement && videoElement.srcObject) {
+            videoElement.srcObject.getTracks().forEach(track => track.stop());
+            videoElement.srcObject = null;
+        }
+        
+        // Close the connection
         peerConnection.close();
         peerConnection = null;
-    }
-    
-    // Also clean up video element
-    const videoElement = document.getElementById('videoFeed');
-    if (videoElement && videoElement.srcObject) {
-        const tracks = videoElement.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
-        videoElement.srcObject = null;
+        iceCandidateQueue = [];
+        
+        console.log("WebRTC connection closed and cleaned up");
+    } catch (error) {
+        console.warn("Error during WebRTC cleanup:", error);
+        // Force nullify the connection even if cleanup fails
+        peerConnection = null;
+        iceCandidateQueue = [];
     }
 }
 
 // WebRTC Ice Candidate handler - set up event source for receiving ICE candidates from server
 function setupIceCandidateListener() {
-    const iceEventSource = new EventSource('/webrtc/ice_updates');
+    if (window.iceEventSource) {
+        window.iceEventSource.close();
+    }
     
-    iceEventSource.addEventListener('message', async (event) => {
+    // Add a unique timestamp to prevent caching
+    const timestamp = Date.now();
+    window.iceEventSource = new EventSource(`/webrtc/ice_updates?t=${timestamp}`);
+    
+    window.iceEventSource.addEventListener('message', async (event) => {
         try {
             const candidate = JSON.parse(event.data);
             await handleRemoteIceCandidate(candidate);
@@ -802,9 +981,9 @@ function setupIceCandidateListener() {
         }
     });
     
-    iceEventSource.addEventListener('error', (error) => {
+    window.iceEventSource.addEventListener('error', (error) => {
         console.error('ICE updates EventSource error:', error);
-        iceEventSource.close();
+        window.iceEventSource.close();
         
         // Retry connection after delay
         setTimeout(() => {
@@ -814,7 +993,26 @@ function setupIceCandidateListener() {
         }, 5000);
     });
     
-    return iceEventSource;
+    return window.iceEventSource;
+}
+
+function isWebRTCSupported() {
+    return !!(window.RTCPeerConnection && 
+             window.RTCSessionDescription && 
+             window.RTCIceCandidate);
+}
+
+// Call this function during initialization to ensure WebRTC is properly set up
+function setupWebRTCWithFallback() {
+    if (!isWebRTCSupported()) {
+        console.warn("WebRTC is not supported in this browser");
+        showToast("Video streaming is not supported in your browser. Some features may be limited.", "warning");
+        return false;
+    }
+    
+    // If supported, set up ICE candidate listener
+    setupIceCandidateListener();
+    return true;
 }
 
 function checkSystemStatus() {
@@ -1034,7 +1232,7 @@ function sendHeartbeat() {
     }
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout (increased)
     
     fetch('/ping', { 
         signal: controller.signal,
@@ -1042,7 +1240,10 @@ function sendHeartbeat() {
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0'
-        }
+        },
+        // Add a unique timestamp to prevent caching
+        method: 'GET',
+        credentials: 'same-origin'
     })
     .then(response => {
         clearTimeout(timeoutId);
@@ -1050,12 +1251,17 @@ function sendHeartbeat() {
         return response.json();
     })
     .then(data => {
-        console.log('Heartbeat successful');
+        console.debug('Heartbeat successful');
+        
+        // Reset reconnect attempts on successful ping
+        reconnectAttempts = Math.max(0, reconnectAttempts - 1);
         
         // Check connection health
         checkConnectionHealth();
     })
     .catch(error => {
+        clearTimeout(timeoutId);
+        
         if (error.name === 'AbortError') {
             console.warn('Server heartbeat timed out');
         } else {
@@ -1075,10 +1281,20 @@ function checkConnectionHealth() {
         setupSSEListener();
     }
     
-    // Check WebRTC connection
-    if (recognitionActive && (!peerConnection || peerConnection.connectionState === 'closed' || 
-        peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected')) {
-        console.log('Restoring WebRTC connection');
+    // Check WebRTC connection with a more comprehensive approach
+    const webrtcNeedsReconnect = 
+        !peerConnection || 
+        peerConnection.connectionState === 'closed' || 
+        peerConnection.connectionState === 'failed' ||
+        (peerConnection.iceConnectionState === 'disconnected' && 
+         Date.now() - (peerConnection.lastActiveTimestamp || 0) > 10000);
+    
+    if (recognitionActive && webrtcNeedsReconnect && !isWebRTCInitializing) {
+        console.log('Restoring WebRTC connection due to health check');
+        // Store timestamp for debugging
+        if (peerConnection) {
+            peerConnection.lastActiveTimestamp = Date.now();
+        }
         initializeWebRTC();
     }
     
