@@ -580,10 +580,7 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <img id="videoFeed" class="video-feed" src="" alt="Camera feed">
-            <script>
-                document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
-            </script>
+            <video id="videoFeed" class="video-feed" autoplay playsinline></video>
             
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
@@ -630,7 +627,7 @@
             </div>
             
             <div class="button-panel">
-                <button class="btn btn-primary" onclick="window.location.href='/'">
+                <button class="btn btn-primary" onclick="window.location.href='/update'">
                     <i class="fas fa-home"></i> Back to Dashboard
                 </button>
                 <button class="btn btn-success" onclick="resetForm()">

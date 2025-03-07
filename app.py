@@ -187,6 +187,81 @@ camera = None
 # Store active peer connections
 peer_connections = set()
 
+# Add these routes to your app.py to handle WebRTC correctly
+@app.post("/webrtc/offer")
+async def webrtc_offer(request: Request):
+    try:
+        # Parse the request body
+        request_data = await request.json()
+        
+        pc = RTCPeerConnection()
+        peer_connections.add(pc)
+        
+        # Add cleanup callback when connection closes
+        @pc.on("connectionstatechange")
+        async def on_connectionstatechange():
+            if pc.connectionState == "failed" or pc.connectionState == "closed":
+                if pc in peer_connections:
+                    peer_connections.discard(pc)
+        
+        # Add video track
+        video_track = VideoStreamTrack()
+        pc.addTrack(video_track)
+
+        # Process the offer
+        offer = RTCSessionDescription(sdp=request_data["sdp"], type=request_data["type"])
+        await pc.setRemoteDescription(offer)
+        
+        # Create and set answer
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        # Update transceiver directions if needed
+        for transceiver in pc.getTransceivers():
+            if transceiver.kind == "video" and transceiver.direction is None:
+                transceiver.direction = "sendrecv"
+        
+        return JSONResponse(content={
+            "sdp": pc.localDescription.sdp, 
+            "type": pc.localDescription.type
+        })
+    
+    except Exception as e:
+        print(f"Error in WebRTC setup: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+@app.post("/webrtc/ice_candidate")
+async def webrtc_ice_candidate(request: Request):
+    try:
+        request_data = await request.json()
+        
+        # Get candidate from request
+        candidate = request_data.get("candidate")
+        sdpMid = request_data.get("sdpMid")
+        sdpMLineIndex = request_data.get("sdpMLineIndex")
+        
+        # Find associated peer connection (in a real app, you'd use a session ID)
+        # Since we're using set(), just pick the most recent one for this example
+        if peer_connections:
+            pc = next(iter(peer_connections))
+            
+            if candidate:
+                await pc.addIceCandidate({
+                    "candidate": candidate,
+                    "sdpMid": sdpMid,
+                    "sdpMLineIndex": sdpMLineIndex
+                })
+                return JSONResponse(content={"success": True})
+            
+        return JSONResponse(content={"success": False, "error": "No active connection"})
+        
+    except Exception as e:
+        print(f"Error handling ICE candidate: {str(e)}")
+        traceback.print_exc()
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+
+# Update the VideoStreamTrack class to ensure it works with face recognition
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
 
@@ -199,6 +274,7 @@ class VideoStreamTrack(MediaStreamTrack):
         global camera, recognition_active
         
         # Only access camera if initialized and needed
+        frame = None
         with camera_lock:
             if camera is None or not camera.isOpened():
                 # Return empty frame if no camera
@@ -211,10 +287,36 @@ class VideoStreamTrack(MediaStreamTrack):
                 else:
                     self.last_frame = frame.copy()
         
-        # Process faces only if recognition is active
-        if recognition_active and self.frame_count % 3 == 0:
-            # Face recognition processing
-            pass  # Placeholder for face recognition processing
+        # Process frame outside the lock
+        if frame is not None:
+            # Add face recognition visualization if active
+            if recognition_active and frame.size > 0:
+                # Convert to RGB for face detection
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                face_locations = face_recognition.face_locations(rgb_frame, model="hog")
+                
+                # Process each detected face
+                if face_locations and known_face_encodings:
+                    face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+                    
+                    for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+                        # Compare with known faces
+                        matches = face_recognition.compare_faces(known_face_encodings, face_encoding, tolerance=CONFIDENCE_THRESHOLD)
+                        name = "Unknown"
+                        
+                        if True in matches:
+                            face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                            best_match_index = np.argmin(face_distances)
+                            if matches[best_match_index]:
+                                name = known_face_names[best_match_index]
+                        
+                        # Draw rectangle and name
+                        cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+                        cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+            
+            # Add status text to show system is working
+            cv2.putText(frame, f"Recognition {'Active' if recognition_active else 'Inactive'}", 
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 120, 255), 2)
         
         # Convert to RGB for av.VideoFrame
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -223,7 +325,7 @@ class VideoStreamTrack(MediaStreamTrack):
         av_frame.time_base = fractions.Fraction(1, 30)
         self.frame_count += 1
         
-        return av_frame
+        return av_frame    
     
 @app.post("/offer")
 async def offer(request: Request):
@@ -602,6 +704,9 @@ async def start_recognition():
         load_known_faces()
 
     recognition_active = True
+    
+    # Start the face recognition process in a background task
+    asyncio.create_task(process_face_recognition())
     
     return JSONResponse(status_code=200, content={"success": True, "status": "Face recognition started"})
 
