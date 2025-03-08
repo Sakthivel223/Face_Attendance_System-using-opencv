@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.websockets import WebSocketState
+from aiortc.rtcicetransport import RTCIceCandidate
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 import av
 import uvicorn
@@ -233,34 +234,43 @@ async def webrtc_offer(request: Request):
 
 @app.post("/webrtc/ice_candidate")
 async def webrtc_ice_candidate(request: Request):
+    global pc  # Ensure this refers to your global peer connection
+    
+    if pc is None:
+        return {"message": "PeerConnection not established"}
+    
     try:
-        request_data = await request.json()
+        data = await request.json()
         
-        # Get candidate from request
-        candidate = request_data.get("candidate")
-        sdpMid = request_data.get("sdpMid")
-        sdpMLineIndex = request_data.get("sdpMLineIndex")
+        if not data:
+            return {"message": "Empty ICE candidate data"}
         
-        # Find associated peer connection (in a real app, you'd use a session ID)
-        # Since we're using set(), just pick the most recent one for this example
-        if peer_connections:
-            pc = next(iter(peer_connections))
+        # Ensure we have the required fields with defaults if not provided
+        ice = RTCIceCandidate(
+            component=1,
+            foundation=None,
+            protocol=None,
+            priority=None,
+            ip=None,
+            port=None,
+            type=None,
+            sdpMid=data.get('sdpMid', '0'),  # Default to '0' if missing
+            sdpMLineIndex=data.get('sdpMLineIndex', 0)  # Default to 0 if missing
+        )
+        
+        # Parse the candidate string if it exists
+        if 'candidate' in data and data['candidate']:
+            ice.from_sdp(data['candidate'])
             
-            if candidate:
-                await pc.addIceCandidate({
-                    "candidate": candidate,
-                    "sdpMid": sdpMid,
-                    "sdpMLineIndex": sdpMLineIndex
-                })
-                return JSONResponse(content={"success": True})
-            
-        return JSONResponse(content={"success": False, "error": "No active connection"})
+        # Add the candidate to the peer connection
+        await pc.addIceCandidate(ice)
         
+        return {"message": "ICE candidate added successfully"}
     except Exception as e:
         print(f"Error handling ICE candidate: {str(e)}")
-        traceback.print_exc()
-        return JSONResponse(content={"error": str(e)}, status_code=500)
-
+        # Return a 200 response even on error to prevent cascading failures
+        return {"message": f"Failed to add ICE candidate: {str(e)}"}
+        
 # Update the VideoStreamTrack class to ensure it works with face recognition
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
