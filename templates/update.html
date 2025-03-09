@@ -987,7 +987,13 @@ async function takeCaptureWithFaceDetection() {
         
         // Convert to base64 data URL
         const imageData = croppedCanvas.toDataURL('image/jpeg', 0.9);
+        if (detectedFace) {
         capturedImages.push(imageData);
+        } 
+        else {
+        showToast('No face detected in the image. Please try again.', 'error');
+        }
+
         
         // Update UI
         captureCount++;

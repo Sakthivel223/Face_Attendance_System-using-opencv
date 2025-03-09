@@ -501,6 +501,8 @@
         let canvas;
         let attendanceData = {};
         let systemStartTime = new Date();
+        let lastDetectedTime = {};
+        const DETECTION_DELAY = 5000; 
         
         // DOM Elements
         const statusElement = document.getElementById('status');
@@ -674,6 +676,14 @@ async function processVideoFrame() {
             for (const detection of detections) {
                 const matchResult = findBestMatch(detection.descriptor);
                 const box = detection.detection.box;
+                const scaleX = video.videoWidth / video.width;
+                const scaleY = video.videoHeight / video.height;
+                const scaledBox = {
+                    x: box.x * scaleX,
+                    y: box.y * scaleY,
+                    width: box.width * scaleX,
+                    height: box.height * scaleY
+                };
                 
                 // Add box debugging here
                 console.log('Detection box:', box.x, box.y, box.width, box.height);
@@ -681,8 +691,13 @@ async function processVideoFrame() {
                 // Draw bounding box
                 if (matchResult.isMatch) {
                     // Known face - green box
-                    drawFaceBox(overlayCtx, box, matchResult.name, matchResult.confidence, true);
-                    logAttendance(matchResult.name);
+                    drawFaceBox(context, scaledBox, matchResult.name, matchResult.confidence, true);
+                    const now = Date.now();
+                    if (!lastDetectedTime[matchResult.name] || now - lastDetectedTime[matchResult.name] > DETECTION_DELAY) {
+                        lastDetectedTime[matchResult.name] = now;
+                        logAttendance(matchResult.name);
+                        speakGreeting(matchResult.name);
+                    }
                     console.log('Attendance logged for:', matchResult.name);
 
                     speakGreeting(matchResult.name);
@@ -821,8 +836,12 @@ async function processVideoFrame() {
             
             // Use browser's speech synthesis
             if ('speechSynthesis' in window) {
-                const utterance = new SpeechSynthesisUtterance(greeting);
-                window.speechSynthesis.speak(utterance);
+                const now = Date.now();
+                if (!lastDetectedTime[name] || now - lastDetectedTime[name] > DETECTION_DELAY) {
+                    lastDetectedTime[name] = now;
+                    const utterance = new SpeechSynthesisUtterance(greeting);
+                    window.speechSynthesis.speak(utterance);
+                }
             }
         }
         

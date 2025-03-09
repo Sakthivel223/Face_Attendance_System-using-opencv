@@ -118,6 +118,37 @@ def initialize_attendance_file(file_path):
     
     return file_path
 
+# Replace all instances of .append() with pd.concat()
+# Example:
+
+def log_attendance(name, entry_time, exit_time):
+    try:
+        print(f"Logging attendance for: {name}, Entry Time: {entry_time}, Exit Time: {exit_time}")
+        
+        # Load existing attendance data
+        if os.path.exists('attendance_log.xlsx'):
+            attendance_df = pd.read_excel('attendance_log.xlsx')
+        else:
+            attendance_df = pd.DataFrame(columns=['Name', 'Entry Time', 'Exit Time', 'Date'])
+        
+        # Create new entry
+        new_entry = {
+            'Name': name,
+            'Entry Time': entry_time,
+            'Exit Time': exit_time,
+            'Date': datetime.now().strftime('%Y-%m-%d')
+        }
+        
+        # Use concat instead of append
+        attendance_df = pd.concat([attendance_df, pd.DataFrame([new_entry])], ignore_index=True)
+        
+        # Save to Excel
+        attendance_df.to_excel('attendance_log.xlsx', index=False)
+        return True
+    except Exception as e:
+        print(f"Error logging attendance: {e}")
+        return False
+    
 def log_attendance_to_excel(name, entry_time=None, exit_time=None):
     """Log attendance to Excel file"""
     # Get today's date
@@ -143,11 +174,20 @@ def log_attendance_to_excel(name, entry_time=None, exit_time=None):
             "EntryTime": entry_time or datetime.now().strftime("%H:%M:%S"),
             "ExitTime": exit_time or ""
         }
-        df = df.append(new_record, ignore_index=True)
+        df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
     else:
         # Update existing record with exit time
-        df.loc[(df["Date"] == today) & (df["Name"] == name), "ExitTime"] = exit_time or datetime.now().strftime("%H:%M:%S")
-    
+        if today_record.empty:
+            new_record = {
+                "Date": today,
+                "Name": name,
+                "EntryTime": entry_time or datetime.now().strftime("%H:%M:%S"),
+                "ExitTime": exit_time or ""
+            }
+            df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
+        else:
+            df.loc[(df["Date"] == today) & (df["Name"] == name), "ExitTime"] = exit_time or datetime.now().strftime("%H:%M:%S")
+            
     # Save the updated DataFrame
     df.to_excel(file_path, index=False)
 
