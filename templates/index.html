@@ -648,6 +648,7 @@
         }
         
         // Process video frame for face recognition
+// Process video frame for face recognition
 async function processVideoFrame() {
     if (!video.srcObject || !isRecognitionRunning) return;
     
@@ -695,42 +696,43 @@ async function processVideoFrame() {
                     const now = Date.now();
                     if (!lastDetectedTime[matchResult.name] || now - lastDetectedTime[matchResult.name] > DETECTION_DELAY) {
                         lastDetectedTime[matchResult.name] = now;
-                        logAttendance(matchResult.name);
-                        speakGreeting(matchResult.name);
+                        const isEntry = await logAttendance(matchResult.name);
+                        if (isEntry !== null) { // Only speak if something was logged
+                            speakGreeting(matchResult.name);
+                        }
                     }
-                    console.log('Attendance logged for:', matchResult.name);
-
-                    speakGreeting(matchResult.name);
+                    console.log('Face detected:', matchResult.name);
                 } else {
                     // Unknown face - red box
                     drawFaceBox(overlayCtx, box, 'Unknown', 0, false);
-                   }
-               }   
-                    // Update last recognition time
-                    lastRecognitionElement.textContent = new Date().toLocaleTimeString();
-                    
-                    // Display overlay temporarily
-                    const temp = document.createElement('img');
-                    temp.src = overlay.toDataURL();
-                    temp.style.position = 'absolute';
-                    temp.style.top = '0';
-                    temp.style.left = '0';
-                    temp.style.width = '100%';
-                    temp.style.height = '100%';
-                    temp.style.objectFit = 'cover';
-                    video.parentElement.appendChild(temp);
-                    
-                    // Remove overlay after brief moment
-                    setTimeout(() => {
-                        if (temp.parentElement) {
-                            temp.parentElement.removeChild(temp);
-                        }
-                    }, 800);
                 }
-            } catch (error) {
-                console.error('Error in face recognition:', error);
             }
+            
+            // Update last recognition time
+            lastRecognitionElement.textContent = new Date().toLocaleTimeString();
+            
+            // Display overlay temporarily
+            const temp = document.createElement('img');
+            temp.src = overlay.toDataURL();
+            temp.style.position = 'absolute';
+            temp.style.top = '0';
+            temp.style.left = '0';
+            temp.style.width = '100%';
+            temp.style.height = '100%';
+            temp.style.objectFit = 'cover';
+            video.parentElement.appendChild(temp);
+            
+            // Remove overlay after brief moment
+            setTimeout(() => {
+                if (temp.parentElement) {
+                    temp.parentElement.removeChild(temp);
+                }
+            }, 800);
         }
+    } catch (error) {
+        console.error('Error in face recognition:', error);
+    }
+}
         
         // Find the best match for a face descriptor
         function findBestMatch(faceDescriptor) {
@@ -792,59 +794,103 @@ async function processVideoFrame() {
         }
         
         // Log attendance for a recognized employee
-        async function logAttendance(employeeName) {
-            try {
-                const today = new Date();
-                const currentTime = today.toLocaleTimeString();
-                const currentDate = today.toISOString().split('T')[0];
-                
-                // Check if we've already logged this person today to determine entry/exit
-                const isEntry = !attendanceData[employeeName] || !attendanceData[employeeName].entryTime;
-                
-                const attendanceRecord = {
-                    name: employeeName,
-                    date: currentDate,
-                    entryTime: isEntry ? currentTime : (attendanceData[employeeName]?.entryTime || ''),
-                    exitTime: isEntry ? '' : currentTime
-                };
-                
-                // Store in local tracking object
-                attendanceData[employeeName] = attendanceRecord;
-                
-                // Send to backend
-                await fetch('/api/log-attendance', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(attendanceRecord)
-                });
-                
-                updateTodayAttendance();
-                
-                console.log(`Logged ${isEntry ? 'entry' : 'exit'} for ${employeeName} at ${currentTime}`);
-            } catch (error) {
-                console.error('Error logging attendance:', error);
-            }
-        }
+    // Log attendance for a recognized employee
+async function logAttendance(employeeName) {
+    try {
+        const today = new Date();
+        const currentTime = today.toLocaleTimeString();
+        const currentDate = today.toISOString().split('T')[0];
         
-        // Speak greeting for recognized employee
-        function speakGreeting(name) {
-            // Check if this is an entry or exit
-            const isEntry = !attendanceData[name] || !attendanceData[name].exitTime === '';
-            const greeting = isEntry ? 
-                `Welcome, ${name}. Your entry has been recorded.` : 
-                `Goodbye, ${name}. Your exit has been recorded.`;
-            
-            // Use browser's speech synthesis
-            if ('speechSynthesis' in window) {
-                const now = Date.now();
-                if (!lastDetectedTime[name] || now - lastDetectedTime[name] > DETECTION_DELAY) {
-                    lastDetectedTime[name] = now;
-                    const utterance = new SpeechSynthesisUtterance(greeting);
-                    window.speechSynthesis.speak(utterance);
+        // Improved logic for entry/exit determination
+        let isEntry = true;
+        let shouldLog = true;
+        
+        if (attendanceData[employeeName]) {
+            // They've been seen today
+            if (attendanceData[employeeName].entryTime && !attendanceData[employeeName].exitTime) {
+                // They entered but didn't exit - so this should be an exit
+                // Only log exit if sufficient time has passed (e.g., 30 minutes)
+                const entryTimeParts = attendanceData[employeeName].entryTime.split(':');
+                const entryDate = new Date();
+                entryDate.setHours(parseInt(entryTimeParts[0], 10));
+                entryDate.setMinutes(parseInt(entryTimeParts[1], 10));
+                entryDate.setSeconds(parseInt(entryTimeParts[2], 10));
+                
+                const timeDiffMinutes = (today - entryDate) / (1000 * 60);
+                
+                if (timeDiffMinutes >= 30) { // Minimum 30 minutes between entry and exit
+                    isEntry = false;
+                } else {
+                    // Too soon for an exit, don't log anything
+                    shouldLog = false;
+                }
+            } else if (attendanceData[employeeName].entryTime && attendanceData[employeeName].exitTime) {
+                // They already completed a cycle today
+                // If it's been long enough since exit, allow a new entry
+                const exitTimeParts = attendanceData[employeeName].exitTime.split(':');
+                const exitDate = new Date();
+                exitDate.setHours(parseInt(exitTimeParts[0], 10));
+                exitDate.setMinutes(parseInt(exitTimeParts[1], 10));
+                exitDate.setSeconds(parseInt(exitTimeParts[2], 10));
+                
+                const timeDiffMinutes = (today - exitDate) / (1000 * 60);
+                
+                if (timeDiffMinutes >= 30) { // Minimum 30 minutes between exit and new entry
+                    isEntry = true;
+                    // Create a new record for this person today
+                    delete attendanceData[employeeName];
+                } else {
+                    // Too soon for a new entry, don't log anything
+                    shouldLog = false;
                 }
             }
         }
         
+        if (shouldLog) {
+            const attendanceRecord = {
+                name: employeeName,
+                date: currentDate,
+                entryTime: isEntry ? currentTime : (attendanceData[employeeName]?.entryTime || ''),
+                exitTime: isEntry ? '' : currentTime
+            };
+            
+            // Store in local tracking object
+            attendanceData[employeeName] = attendanceRecord;
+            
+            // Send to backend
+            await fetch('/api/log-attendance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(attendanceRecord)
+            });
+            
+            updateTodayAttendance();
+            
+            console.log(`Logged ${isEntry ? 'entry' : 'exit'} for ${employeeName} at ${currentTime}`);
+            return isEntry; // Return isEntry flag for greeting message
+        }
+        
+        return null; // Nothing logged
+    } catch (error) {
+        console.error('Error logging attendance:', error);
+        return null;
+    }
+}
+        
+    // Speak greeting for recognized employee
+function speakGreeting(name) {
+    // Get current entry/exit status from attendance data
+    const isEntry = !attendanceData[name] || !attendanceData[name].exitTime;
+    const greeting = isEntry ? 
+        `Welcome, ${name}. Your entry has been recorded.` : 
+        `Goodbye, ${name}. Your exit has been recorded.`;
+    
+    // Use browser's speech synthesis
+    if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(greeting);
+        window.speechSynthesis.speak(utterance);
+    }
+}
         // Update system metrics display
         function updateSystemMetrics() {
             // Update system uptime
