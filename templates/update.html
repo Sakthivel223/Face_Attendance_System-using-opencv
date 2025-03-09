@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Add New Employee - Face Recognition System</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.3.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
     <style>
         :root {
             --primary-color: #2c3e50;
@@ -580,7 +581,11 @@
         </div>
         
         <div class="video-container" id="captureContainer" style="display: none;">
-            <video id="videoFeed" class="video-feed" autoplay playsinline></video>            
+            <img id="videoFeed" class="video-feed" src="" alt="Camera feed">
+            <script>
+                document.getElementById("videoFeed").src = "/video_feed?" + new Date().getTime();
+            </script>
+            
             <div class="loading-overlay" id="loadingOverlay">
                 <div class="spinner"></div>
                 <p>Starting camera...</p>
@@ -626,7 +631,7 @@
             </div>
             
             <div class="button-panel">
-                <button class="btn btn-primary" onclick="window.location.href='/'">
+                <button class="btn btn-primary" onclick="window.location.href='/update'">
                     <i class="fas fa-home"></i> Back to Dashboard
                 </button>
                 <button class="btn btn-success" onclick="resetForm()">
@@ -659,7 +664,7 @@
         let capturedImages = [];
         
         // Check if static directory exists and create it if not
-        fetch('/static/icons/placeholder.jpg')
+        fetch('/static/icons/camera-placeholder.jpg')
             .catch(() => {
                 console.warn('Camera placeholder image not found. Using fallback.');
                 // We'll use a text placeholder instead
@@ -736,44 +741,29 @@
                 });
         }
         
-        function backToDetails() {
-            document.getElementById('step2').classList.remove('active');
-            document.getElementById('step1').classList.replace('completed', 'active');
-            document.getElementById('captureContainer').style.display = 'none';
-            document.getElementById('captureForm').style.display = 'none';
-            document.getElementById('detailsForm').style.display = 'block';
+        try {
+            // Draw current video frame to canvas for processing
+            const context = canvas.getContext('2d');
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Reset capture state
-            captureCount = 0;
-            isCaptureComplete = false;
-            capturedImages = [];
-            document.getElementById('captureProgress').style.width = '0%';
-            document.getElementById('captureStatus').textContent = `Ready to capture 0/${maxCaptureCount} images`;
-            document.getElementById('feedbackMessage').textContent = '';
-            document.getElementById('capturedImagesContainer').innerHTML = '';
-        }
-        
-        function validateForm() {
-    let name = document.getElementById("employeeName").value.trim();
-    if (!name) {
-        alert("Employee name cannot be empty!");
-        return false;
-    }
-    return true;
-}
-
-        function startCapture() {
-            if (!employeeData.name) {
-                showToast('Employee name is required', 'error');
+            // Detect faces
+            const detections = await faceapi.detectAllFaces(canvas);
+            
+            if (detections.length === 0) {
+                feedbackMessage.textContent = "No face detected. Please position your face in the camera.";
+                detectedFace = null;
                 return;
             }
             
-            const startBtn = document.getElementById('startCaptureBtn');
-            const singleImageBtn = document.getElementById('takeSingleImageBtn');
-            startBtn.disabled = true;
-            singleImageBtn.disabled = true;
-            document.getElementById('loadingOverlay').style.display = 'flex';
-            document.getElementById('feedbackMessage').textContent = 'Starting capture process...';
+            if (detections.length > 1) {
+                feedbackMessage.textContent = "Multiple faces detected. Please ensure only the employee is in frame.";
+                detectedFace = null;
+                return;
+            }
+            
+            // Single face detected - good!
+            const detection = detections[0];
+            const box = detection.box;
             
             // Reset capture state
             captureCount = 0;
@@ -985,13 +975,6 @@
         window.addEventListener("beforeunload", function () {
             // Clean up resources when leaving the page
         });
-        function validateFacePosition() {
-    if (!faceCentered) {
-        showToast("Face not properly centered!", "error");
-        return false;
-    }
-    return true;
-}
     </script>
 </body>
 </html>
