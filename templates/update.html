@@ -910,6 +910,7 @@ function drawFaceBox(box) {
 }
 
 // Start the automated capture process
+// Ensure the auto-capture stops when we reach the required number
 async function startCapture() {
     if (captureInProgress) return;
     
@@ -936,6 +937,9 @@ async function startCapture() {
         
         if (detectedFace) {
             await takeCaptureWithFaceDetection();
+        } else {
+            // Skip this attempt if no face is detected, but continue trying
+            showToast('No face detected. Adjusting position...', 'info');
         }
     }, 1500); // Take image every 1.5 seconds
 }
@@ -949,7 +953,7 @@ async function takeSingleImage() {
     
     await takeCaptureWithFaceDetection();
     
-    if (captureCount >= TOTAL_CAPTURES) {
+    if (captureCount == TOTAL_CAPTURES) {
         await finalizeCaptureProcess();
     }
 }
@@ -995,19 +999,22 @@ async function takeCaptureWithFaceDetection() {
         }
 
         
-        // Update UI
-        captureCount++;
-        updateCaptureUI();
-        
-        // Play capture sound
-        const captureSound = new Audio('/sounds/camera-shutter.mp3');
-        captureSound.play().catch(e => console.log('Audio play error:', e));
-        
-        // Show preview
-        const imgElement = document.createElement('img');
-        imgElement.src = imageData;
-        imgElement.className = 'captured-image';
-        capturedImagesContainer.appendChild(imgElement);
+        if (detectedFace) {
+            capturedImages.push(imageData);
+            captureCount++;
+            updateCaptureUI();
+            
+            // Play capture sound and show preview
+            const captureSound = new Audio('/sounds/camera-shutter.mp3');
+            captureSound.play().catch(e => console.log('Audio play error:', e));
+            
+            const imgElement = document.createElement('img');
+            imgElement.src = imageData;
+            imgElement.className = 'captured-image';
+            capturedImagesContainer.appendChild(imgElement);
+        } else {
+            showToast('No face detected in the image. Please try again.', 'error');
+        }
         
     } catch (error) {
         console.error('Error capturing image:', error);

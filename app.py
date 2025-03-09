@@ -78,24 +78,30 @@ def base64_to_image(base64_string):
     return img
 
 def get_face_encoding(img):
-    """Get face encoding from image using Haar Cascade"""
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
-
-    if len(faces) == 0:
+    """Get face encoding from image with better error handling"""
+    try:
+        # Convert BGR to RGB (face_recognition uses RGB)
+        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Find face locations
+        face_locations = face_recognition.face_locations(rgb_img)
+        
+        if not face_locations:
+            print("No face locations detected")
+            return None
+        
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(rgb_img, face_locations)
+        
+        if not face_encodings:
+            print("Failed to get face encodings")
+            return None
+        
+        # Return first face encoding
+        return face_encodings[0].tolist()
+    except Exception as e:
+        print(f"Error in face encoding: {str(e)}")
         return None
-
-    # Get the first face detected
-    (x, y, w, h) = faces[0]
-    face_img = img[y:y+h, x:x+w]
-    
-    # Get face encoding (you can use any encoding method here)
-    face_encoding = face_recognition.face_encodings(face_img)
-
-    if not face_encoding:
-        return None
-
-    return face_encoding[0].tolist()
 
 def get_attendance_file_path():
     """Get the path to the current month's attendance file"""
@@ -210,6 +216,22 @@ async def get_known_faces():
     """Get all known faces"""
     return load_known_faces()
 
+train_script_path = "train_face.py"
+if not os.path.exists(train_script_path):
+    print(f"ERROR: Training script not found at {train_script_path}")
+    # Continue without running the script
+else:
+    # Attempt to run the script
+    try:
+        import subprocess
+        process = subprocess.run(["python", train_script_path], 
+                                check=True, 
+                                capture_output=True, 
+                                text=True)
+        print("Training output:", process.stdout)
+    except Exception as train_error:
+        print(f"Training script error: {train_error}")
+
 @app.post("/api/register-employee")
 async def register_employee(request: Request):
     """Register a new employee with face images"""
@@ -222,38 +244,52 @@ async def register_employee(request: Request):
         if not name or not images:
             raise HTTPException(status_code=400, detail="Name and images are required")
         
+        print(f"Processing registration for {name} with {len(images)} images")
+        
         # Create employee directory in Dataset folder
         employee_dir = os.path.join("Dataset", name)
         os.makedirs(employee_dir, exist_ok=True)
+        print(f"Created directory: {employee_dir}")
         
         # Process and save face images
         face_encodings = []
         
         for i, img_base64 in enumerate(images):
-            # Convert base64 to image
-            img = base64_to_image(img_base64)
-            
-            if img is None:
-                continue
-            
-            # Save image to dataset folder
-            img_path = os.path.join(employee_dir, f"{name}_{i}.jpg")
-            cv2.imwrite(img_path, img)
-            
-            # Get face encoding
-            face_encoding = get_face_encoding(img)
-            
-            if face_encoding:
-                face_encodings.append(face_encoding)
+            try:
+                # Convert base64 to image
+                img = base64_to_image(img_base64)
+                
+                if img is None:
+                    print(f"Failed to convert image {i} to OpenCV format")
+                    continue
+                
+                # Save image to dataset folder
+                img_path = os.path.join(employee_dir, f"{name}_{i}.jpg")
+                cv2.imwrite(img_path, img)
+                print(f"Saved image to {img_path}")
+                
+                # Get face encoding
+                face_encoding = get_face_encoding(img)
+                
+                if face_encoding:
+                    face_encodings.append(face_encoding)
+                    print(f"Successfully encoded face in image {i}")
+                else:
+                    print(f"No face detected in image {i}")
+            except Exception as img_error:
+                print(f"Error processing image {i}: {str(img_error)}")
         
         if not face_encodings:
             raise HTTPException(status_code=400, detail="No faces detected in the provided images")
+        
+        print(f"Processed {len(face_encodings)} face encodings")
         
         # Calculate average face encoding
         avg_encoding = np.mean(face_encodings, axis=0).tolist()
         
         # Add to known faces
         known_faces = load_known_faces()
+        print(f"Loaded {len(known_faces)} existing known faces")
         
         # Check if employee already exists
         employee_exists = False
@@ -261,6 +297,7 @@ async def register_employee(request: Request):
             if face["name"] == name:
                 face["descriptor"] = avg_encoding
                 employee_exists = True
+                print(f"Updated existing employee: {name}")
                 break
         
         if not employee_exists:
@@ -268,15 +305,24 @@ async def register_employee(request: Request):
                 "name": name,
                 "descriptor": avg_encoding
             })
+            print(f"Added new employee: {name}")
         
         # Save updated known faces
         save_known_faces(known_faces)
+        print("Saved known faces to file")
+        
+        # Skip calling the training script for now
+        # We'll handle this separately
         
         return {"success": True, "message": f"Employee {name} registered successfully"}
     
     except Exception as e:
+        print(f"ERROR in register_employee: {str(e)}")
+        print(f"Error type: {type(e)}")
+        import traceback
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @app.post("/api/log-attendance")
 async def log_attendance(request: Request):
     """Log attendance for an employee"""
