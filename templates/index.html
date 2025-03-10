@@ -559,258 +559,586 @@
         }
         
         // Load known faces from server
-        async function loadKnownFaces() {
-            try {
-                const response = await fetch('/api/known-faces');
-                const data = await response.json();
-                knownFaces = Object.entries(data).map(([name, descriptor]) => ({
-                    name,
-                    descriptor: new Float32Array(descriptor)
-                }));
-                console.log(`Loaded ${knownFaces.length} known faces`);
-            } catch (error) {
-                console.error('Error loading known faces:', error);
-                showToast('Failed to load employee data', 'error');
-                knownFaces = [];
-            }
+    async function loadKnownFaces() {
+    try {
+        const response = await fetch('/api/known-faces');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
         }
+        
+        const data = await response.json();
+        
+        if (!data || Object.keys(data).length === 0) {
+            console.error('Known faces data is empty!');
+            showToast('Warning: No known faces found in database', 'warning');
+            knownFaces = [];
+            return;
+        }
+        
+        knownFaces = Object.entries(data).map(([name, descriptor]) => {
+            // Validate descriptor
+            if (!descriptor || !Array.isArray(descriptor) || descriptor.length === 0) {
+                console.error(`Invalid descriptor for ${name}`);
+                return null;
+            }
+            
+            return {
+                name,
+                descriptor: new Float32Array(descriptor)
+            };
+        }).filter(face => face !== null); // Remove any invalid entries
+        
+        console.log(`Loaded ${knownFaces.length} known faces`);
+        
+        // Log descriptors statistics for debugging
+        if (knownFaces.length > 0) {
+            const sampleDescriptor = knownFaces[0].descriptor;
+            console.log(`Descriptor length: ${sampleDescriptor.length}`);
+            console.log(`Sample values: ${Array.from(sampleDescriptor.slice(0, 5))}`);
+        }
+    } catch (error) {
+        console.error('Error loading known faces:', error);
+        showToast('Failed to load employee data', 'error');
+        knownFaces = [];
+    }
+}
         
         // Start the recognition process
         async function startRecognition() {
-            if (isRecognitionRunning) return;
-            
-            loadingOverlay.style.display = 'flex';
-            
-            try {
-                await loadFaceDetectionModel();
-                
-                // Start the camera
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { 
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        facingMode: 'user'
-                    } 
-                });
-                
-                video.srcObject = stream;
-                cameraStatusElement.textContent = 'Active';
-                cameraStatusElement.className = 'status-active';
-                
-                // Wait for video to be ready
-                await new Promise(resolve => {
-                    video.onloadedmetadata = () => {
-                        resolve();
-                    };
-                });
-                
-                loadingOverlay.style.display = 'none';
-                document.querySelector('.video-placeholder').style.display = 'none';
-                
-                // Start face recognition process
-                isRecognitionRunning = true;
-                statusElement.textContent = 'Running';
-                statusElement.className = 'status-active';
-                
-                // Create recognition loop
-                recognitionInterval = setInterval(processVideoFrame, 1000); // Process every second
-                
-                showToast('Face recognition started', 'success');
-            } catch (error) {
-                console.error('Error starting recognition:', error);
-                loadingOverlay.style.display = 'none';
-                showToast('Failed to start camera or recognition', 'error');
-            }
-        }
+    if (isRecognitionRunning) return;
+    
+    loadingOverlay.style.display = 'flex';
+    
+    try {
+        await loadFaceDetectionModel();
+        
+        // Start the camera with higher resolution
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user',
+                frameRate: { ideal: 30 } // Request higher frame rate
+            } 
+        });
+        
+        video.srcObject = stream;
+        cameraStatusElement.textContent = 'Active';
+        cameraStatusElement.className = 'status-active';
+        
+        // Wait for video to be ready
+        await new Promise(resolve => {
+            video.onloadedmetadata = () => {
+                video.play();
+                resolve();
+            };
+        });
+        
+        loadingOverlay.style.display = 'none';
+        document.querySelector('.video-placeholder').style.display = 'none';
+        
+        // Clear any previous detected faces to start fresh
+        clearDetectedFaces();
+        
+        // Start face recognition process
+        isRecognitionRunning = true;
+        statusElement.textContent = 'Running';
+        statusElement.className = 'status-active';
+        
+        // Start the animation frame loop
+        requestAnimationFrame(processVideoFrame);
+        
+        showToast('Face recognition started', 'success');
+    } catch (error) {
+        console.error('Error starting recognition:', error);
+        loadingOverlay.style.display = 'none';
+        showToast('Failed to start camera or recognition', 'error');
+    }
+}
         
         // Stop the recognition process
         function stopRecognition() {
-            if (!isRecognitionRunning) return;
-            
-            // Stop the recognition interval
-            clearInterval(recognitionInterval);
-            
-            if (video.srcObject) {
-                const tracks = video.srcObject.getTracks();
-                tracks.forEach(track => track.stop());
-                video.srcObject = null;
-            }
-            
-            // Update UI
-            isRecognitionRunning = false;
-            statusElement.textContent = 'Stopped';
-            statusElement.className = 'status-inactive';
-            cameraStatusElement.textContent = 'Inactive';
-            cameraStatusElement.className = 'status-inactive';
-            
-            showToast('Face recognition stopped', 'info');
-            document.querySelector('.video-placeholder').style.display = 'block';
-        }
+    if (!isRecognitionRunning) return;
+    
+    // Just set the flag to false, the animation loop will stop on next frame
+    isRecognitionRunning = false;
+    
+    if (video.srcObject) {
+        const tracks = video.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+        video.srcObject = null;
+    }
+    
+    // Remove the overlay canvas
+    const videoContainer = video.parentElement;
+    const overlay = videoContainer.querySelector('.face-overlay');
+    if (overlay) {
+        videoContainer.removeChild(overlay);
+    }
+    
+    // Update UI
+    statusElement.textContent = 'Stopped';
+    statusElement.className = 'status-inactive';
+    cameraStatusElement.textContent = 'Inactive';
+    cameraStatusElement.className = 'status-inactive';
+    
+    showToast('Face recognition stopped', 'info');
+    document.querySelector('.video-placeholder').style.display = 'block';
+}
         
-        // Process video frame for face recognition
-// Process video frame for face recognition
+// Fix the processVideoFrame function to ensure continuous rendering
 async function processVideoFrame() {
-    if (!video.srcObject || !isRecognitionRunning) return;
+    if (!video.srcObject || !isRecognitionRunning) {
+        // If not running, ensure we return immediately but maintain the loop
+        if (isRecognitionRunning) {
+            requestAnimationFrame(processVideoFrame);
+        }
+        return;
+    }
     
     // Draw the current video frame to the canvas
-    const context = canvas.getContext('2d');
+    const context = canvas.getContext('2d', { willReadFrequently: true });
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     try {
+        // Get the video container element
+        const videoContainer = video.parentElement;
+        
+        // Make sure overlay exists and is properly configured
+        let overlay = videoContainer.querySelector('.face-overlay');
+        if (!overlay) {
+            overlay = document.createElement('canvas');
+            overlay.classList.add('face-overlay');
+            overlay.style.position = 'absolute';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.pointerEvents = 'none';
+            overlay.style.zIndex = '10';
+            videoContainer.appendChild(overlay);
+            console.log("Overlay created and appended to container");
+        }
+        
+        // Always update overlay to match video dimensions exactly
+        const videoRect = video.getBoundingClientRect();
+        overlay.width = videoRect.width;
+        overlay.height = videoRect.height;
+        
+        // Clear previous overlay drawing
+        const overlayCtx = overlay.getContext('2d', { willReadFrequently: true });
+        overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+        
+        // Calculate scaling between hidden canvas and displayed video dimensions
+        const scaleX = videoRect.width / canvas.width;
+        const scaleY = videoRect.height / canvas.height;
+        
         // Detect faces in the current frame
         const detections = await faceapi.detectAllFaces(canvas)
             .withFaceLandmarks()
             .withFaceDescriptors();
         
+        // Process and draw detected faces
         if (detections.length > 0) {
-            // Create a visual overlay for the video
-            const overlay = document.createElement('canvas');
-            overlay.width = video.videoWidth;
-            overlay.height = video.videoHeight;
-            const overlayCtx = overlay.getContext('2d');
-            
-            // Add debug logging here
-            console.log('Video dimensions:', video.videoWidth, video.videoHeight);
-            console.log('Canvas dimensions:', canvas.width, canvas.height);
-            
             // Process each detected face
             for (const detection of detections) {
                 const matchResult = findBestMatch(detection.descriptor);
                 const box = detection.detection.box;
-                const scaleX = video.videoWidth / video.width;
-                const scaleY = video.videoHeight / video.height;
+                
+                // Scale the box coordinates to match the displayed video size
+                const boxExpansion = 0.2; // 20% larger
                 const scaledBox = {
-                    x: box.x * scaleX,
-                    y: box.y * scaleY,
-                    width: box.width * scaleX,
-                    height: box.height * scaleY
+                    x: (box.x - (box.width * boxExpansion/2)) * scaleX,
+                    y: (box.y - (box.height * boxExpansion/2)) * scaleY,
+                    width: box.width * (1 + boxExpansion) * scaleX,
+                    height: box.height * (1 + boxExpansion) * scaleY
                 };
                 
-                // Add box debugging here
-                console.log('Detection box:', box.x, box.y, box.width, box.height);
-                
-                // Draw bounding box
+                // Draw face box with improved visibility
                 if (matchResult.isMatch) {
                     // Known face - green box
-                    drawFaceBox(context, scaledBox, matchResult.name, matchResult.confidence, true);
+                    drawEnhancedFaceBox(overlayCtx, scaledBox, matchResult.name, matchResult.confidence, true);
+                    
+                    // Handle attendance logging in the background
                     const now = Date.now();
                     if (!lastDetectedTime[matchResult.name] || now - lastDetectedTime[matchResult.name] > DETECTION_DELAY) {
                         lastDetectedTime[matchResult.name] = now;
-                        const isEntry = await logAttendance(matchResult.name);
-                        if (isEntry !== null) { // Only speak if something was logged
-                            speakGreeting(matchResult.name);
-                        }
+                        setTimeout(async () => {
+                            const isEntry = await logAttendance(matchResult.name);
+                            if (isEntry !== null) {
+                                speakGreeting(matchResult.name);
+                            }
+                        }, 0);
                     }
-                    console.log('Face detected:', matchResult.name);
                 } else {
-                    // Unknown face - red box
-                    drawFaceBox(overlayCtx, box, 'Unknown', 0, false);
+                    // Unknown face - red box with "Unknown" label
+                    drawEnhancedFaceBox(overlayCtx, scaledBox, 'Unknown', 0, false);
+                    
+                    setTimeout(async () => {
+                        await saveUnknownFace(canvas, box, detections);
+                    }, 0);
                 }
             }
             
             // Update last recognition time
             lastRecognitionElement.textContent = new Date().toLocaleTimeString();
-            
-            // Display overlay temporarily
-            const temp = document.createElement('img');
-            temp.src = overlay.toDataURL();
-            temp.style.position = 'absolute';
-            temp.style.top = '0';
-            temp.style.left = '0';
-            temp.style.width = '100%';
-            temp.style.height = '100%';
-            temp.style.objectFit = 'cover';
-            video.parentElement.appendChild(temp);
-            
-            // Remove overlay after brief moment
-            setTimeout(() => {
-                if (temp.parentElement) {
-                    temp.parentElement.removeChild(temp);
-                }
-            }, 800);
         }
+        
+        // Ensure overlay is always visible
+        overlay.style.display = 'block';
+        
     } catch (error) {
         console.error('Error in face recognition:', error);
     }
+    
+    // Always continue the animation loop while running
+    if (isRecognitionRunning) {
+        requestAnimationFrame(processVideoFrame);
+    }
 }
+
+// Simplified drawing function to ensure boxes appear correctly
+function drawEnhancedFaceBox(context, box, name, confidence, isKnown) {
+    // Box styling parameters - IMPROVED FOR VISIBILITY
+    const lineWidth = 6; // Increased from 4 to make the box much more visible
+    const mainColor = isKnown ? 'rgba(39, 174, 96, 1)' : 'rgba(231, 76, 60, 1)';
+    const glowColor = isKnown ? 'rgba(39, 174, 96, 0.7)' : 'rgba(231, 76, 60, 0.7)'; // Increased opacity
+    const confidenceText = isKnown ? `${(confidence * 100).toFixed(1)}%` : '';
+    
+    // Add stronger animation effect - more vibrant pulsing 
+    const pulseIntensity = Math.sin(Date.now() * 0.005) * 0.3 + 0.7; // More pronounced pulse
+    
+    // Reset any previous context settings
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalAlpha = 1;
+    
+    // Enhanced shadow for glow effect
+    context.shadowColor = glowColor;
+    context.shadowBlur = 20; // Increased from 15
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+    
+    // Draw main box with slightly rounded corners
+    context.lineWidth = lineWidth;
+    context.strokeStyle = mainColor;
+    
+    // Draw the box - use a simpler approach for better performance
+    context.beginPath();
+    context.rect(box.x, box.y, box.width, box.height);
+    context.stroke();
+    
+    // Prepare for text display - make label more visible
+    const fontSize = 16; // Increased from 14
+    const fontFamily = "'Segoe UI', Arial, sans-serif";
+    
+    // Ensure the name is measured correctly for width calculation
+    context.font = `bold ${fontSize}px ${fontFamily}`;
+    
+    // Draw a solid background rectangle for the name label
+    const nameWidth = context.measureText(name).width + 20; // Extra padding
+    const labelHeight = 30; // Taller label
+    
+    // Background for label
+    context.fillStyle = mainColor;
+    context.fillRect(box.x, Math.max(box.y - labelHeight - 5, 0), nameWidth, labelHeight);
+    
+    // Draw name text with enhanced visibility
+    context.fillStyle = 'white';
+    context.font = `bold ${fontSize}px ${fontFamily}`;
+    context.textBaseline = 'middle';
+    context.fillText(
+        name, 
+        box.x + 10, 
+        Math.max(box.y - labelHeight/2 - 5, labelHeight/2)
+    );
+    
+    // Draw confidence text if known face
+    if (isKnown && confidenceText) {
+        context.font = `${fontSize}px ${fontFamily}`;
+        context.fillStyle = 'rgba(255, 255, 255, 1)'; // Fully opaque
+        context.fillText(
+            confidenceText, 
+            box.x + nameWidth + 5, 
+            Math.max(box.y - labelHeight/2 - 5, labelHeight/2)
+        );
+    }
+}
+// Global array to track detected faces during a session
+let detectedFaces = [];
+let simultaneousFacesDetected = false;
+
+// Save unknown face to folder
+async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
+    try {
+        // Create a temporary canvas to hold just the face
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = faceBox.width;
+        tempCanvas.height = faceBox.height;
+        const tempCtx = tempCanvas.getContext('2d');
         
-        // Find the best match for a face descriptor
-        function findBestMatch(faceDescriptor) {
-            let bestMatch = { isMatch: false, name: 'Unknown', confidence: 0 };
+        // Extract face region from source canvas
+        const faceRegion = sourceCanvas.getContext('2d').getImageData(
+            faceBox.x, faceBox.y, faceBox.width, faceBox.height
+        );
+        tempCtx.putImageData(faceRegion, 0, 0);
+        
+        // Compute face descriptor for comparison
+        const faceDescriptor = await faceapi.computeFaceDescriptor(tempCanvas);
+        
+        // Check if face is already in known faces database
+        const matchResult = findBestMatch(faceDescriptor);
+        
+        // Check if multiple different faces are detected simultaneously
+        if (allFacesDetected && allFacesDetected.length > 1) {
+            simultaneousFacesDetected = true;
+            console.log(`Multiple faces detected: ${allFacesDetected.length}`);
             
-            for (const knownFace of knownFaces) {
-                // Calculate face similarity using Euclidean distance
-                const distance = faceapi.euclideanDistance(
-                    new Float32Array(faceDescriptor),
-                    knownFace.descriptor
-                );
-                
-                // Convert distance to similarity score (0-1)
-                const confidence = 1 - distance;
-                
-                if (confidence > 0.6 && confidence > bestMatch.confidence) {
+            // Log all detected faces for debugging
+            console.log('All detected faces:', allFacesDetected);
+        }
+        
+        // If it's a match with confidence above threshold, don't save as unknown
+        if (matchResult.isMatch && matchResult.confidence > 0.75) {
+            console.log('Face already known, not saving as unknown:', matchResult.name);
+            return;
+        }
+        
+        // Check if this face is similar to any face we've already detected in this session
+        // to prevent storing the same person multiple times
+        const isSimilarToDetected = isAlreadyDetected(faceDescriptor);
+        
+        if (isSimilarToDetected) {
+            console.log('Similar face already detected in this session, not saving duplicate');
+            return;
+        }
+        
+        // Add to detected faces array to prevent future duplicates
+        detectedFaces.push({
+            descriptor: faceDescriptor,
+            timestamp: new Date().toISOString()
+        });
+        
+        // Create a new canvas with just the face
+        const faceCanvas = document.createElement('canvas');
+        faceCanvas.width = faceBox.width;
+        faceCanvas.height = faceBox.height;
+        const faceCtx = faceCanvas.getContext('2d');
+        
+        // Draw just the face region to the new canvas
+        faceCtx.drawImage(
+            sourceCanvas, 
+            faceBox.x, faceBox.y, faceBox.width, faceBox.height,
+            0, 0, faceBox.width, faceBox.height
+        );
+        
+        // Convert to data URL
+        const dataURL = faceCanvas.toDataURL('image/png');
+        
+        // Generate timestamp for filename
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-');
+        
+        // Add flag if multiple faces were detected
+        const multiFlag = simultaneousFacesDetected ? 'multi-' : '';
+        
+        // Send to server for saving
+        const response = await fetch('/api/save-unknown-face', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                imageData: dataURL,
+                filename: `unknown-face-${multiFlag}${timestamp}.png`
+            })
+        });
+        
+        // Check if the response was successful
+        if (response.ok) {
+            const data = await response.json();
+            console.log('Unknown face saved successfully:', data.message || 'Success');
+        } else {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(errorData?.detail || `Server error: ${response.status} ${response.statusText}`);
+        }
+    } catch (error) {
+        console.error('Error saving unknown face:', error);
+    }
+}
+
+// Helper function to determine if a face is already detected in this session
+function isAlreadyDetected(newFaceDescriptor, similarityThreshold = 0.7) {
+    if (!detectedFaces.length) return false;
+    
+    for (const storedFace of detectedFaces) {
+        // Calculate similarity between face descriptors
+        const distance = faceapi.euclideanDistance(newFaceDescriptor, storedFace.descriptor);
+        
+        // Lower distance means higher similarity
+        if (distance < similarityThreshold) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Function to clear detected faces (can be called when starting a new session)
+function clearDetectedFaces() {
+    detectedFaces = [];
+    simultaneousFacesDetected = false;
+    console.log('Detected faces cache cleared');
+}
+
+// This function should be called from your main face detection loop
+async function processDetectedFaces(video, canvas, detections) {
+    // Assume detections is the array of detected faces from faceapi
+    
+    if (detections && detections.length > 0) {
+        // Process each detected face
+        for (const detection of detections) {
+            const faceBox = detection.detection.box;
+            // Pass all detections to saveUnknownFace to enable multi-face handling
+            await saveUnknownFace(canvas, faceBox, detections);
+        }
+    }
+    
+    // Reset multi-face flag after processing is complete if needed
+    // You might want different logic here based on your application needs
+    // simultaneousFacesDetected = false;
+}
+        // Find the best match for a face descriptor
+// Find the best match for a face descriptor
+function findBestMatch(faceDescriptor) {
+    let bestMatch = { isMatch: false, name: 'Unknown', confidence: 0 };
+    const HIGH_CONFIDENCE_THRESHOLD = 0.70; // Slightly higher for better accuracy
+    const MEDIUM_CONFIDENCE_THRESHOLD = 0.55; 
+    
+    if (!knownFaces || knownFaces.length === 0) {
+        console.warn('No known faces available for matching');
+        return bestMatch;
+    }
+    
+    try {
+        // Create array to collect all match results
+        let allMatches = [];
+        
+        for (const knownFace of knownFaces) {
+            if (!knownFace.descriptor) {
+                console.warn(`Missing descriptor for known face: ${knownFace.name}`);
+                continue;
+            }
+            
+            // Ensure descriptors are Float32Array type for consistent comparison
+            const faceDescriptorArray = new Float32Array(faceDescriptor);
+            
+            // Calculate face similarity using Euclidean distance
+            const distance = faceapi.euclideanDistance(
+                faceDescriptorArray,
+                new Float32Array(knownFace.descriptor)
+            );
+            
+            // Convert distance to similarity score (0-1)
+            const confidence = 1 - distance;
+            
+            // Add to all matches for diagnostics
+            allMatches.push({
+                name: knownFace.name,
+                confidence: confidence
+            });
+            
+            // Check against primary threshold
+            if (confidence > HIGH_CONFIDENCE_THRESHOLD && confidence > bestMatch.confidence) {
+                bestMatch = {
+                    isMatch: true,
+                    name: knownFace.name,
+                    confidence: confidence
+                };
+            }
+        }
+        
+        // If no match found with high confidence, try medium confidence
+        if (!bestMatch.isMatch) {
+            for (const match of allMatches) {
+                if (match.confidence > MEDIUM_CONFIDENCE_THRESHOLD && 
+                    match.confidence > bestMatch.confidence) {
                     bestMatch = {
                         isMatch: true,
-                        name: knownFace.name,
-                        confidence: confidence
+                        name: match.name,
+                        confidence: match.confidence,
+                        isLowerConfidence: true
                     };
                 }
             }
-            
-            return bestMatch;
         }
         
-        // Draw face bounding box on the canvas
-        function drawFaceBox(context, box, name, confidence, isKnown) {
-            const lineWidth = 3;
-            const color = isKnown ? 'rgba(39, 174, 96, 0.8)' : 'rgba(192, 57, 43, 0.8)';
-            const confidenceText = isKnown ? `${(confidence * 100).toFixed(1)}%` : '';
-            
-            // Draw the box
-            context.lineWidth = lineWidth;
-            context.strokeStyle = color;
-            context.fillStyle = color;
-            context.strokeRect(box.x, box.y, box.width, box.height);
-            
-            // Draw the label background
-            context.fillStyle = color;
-            const textPadding = 5;
-            const textHeight = 20;
-            context.fillRect(
-                box.x - lineWidth, 
-                box.y - textHeight - textPadding * 2, 
-                name.length * 8 + 30 + textPadding * 2, 
-                textHeight + textPadding * 2
-            );
-            
-            // Draw the text
-            context.fillStyle = 'white';
-            context.font = '16px Arial';
-            context.fillText(
-                `${name} ${confidenceText}`, 
-                box.x + textPadding - lineWidth, 
-                box.y - textPadding
-            );
+        return bestMatch;
+    } catch (error) {
+        console.error('Error in face matching:', error);
+        return bestMatch;
+    }
+}
+
+function debugKnownFaces() {
+    console.log(`Total known faces: ${knownFaces.length}`);
+    knownFaces.forEach((face, index) => {
+        console.log(`Face #${index}: ${face.name}`);
+        console.log(`Has valid descriptor: ${face.descriptor && face.descriptor.length > 0}`);
+        // Log the first few values of the descriptor to check if it looks valid
+        if (face.descriptor) {
+            console.log(`Descriptor sample: ${face.descriptor.slice(0, 5).join(', ')}`);
         }
+    });
+}
         
-        // Log attendance for a recognized employee
-    // Log attendance for a recognized employee
+// Helper function for rounded rectangles
+function roundedRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + width, y, x + width, y + height, radius);
+    ctx.arcTo(x + width, y + height, x, y + height, radius);
+    ctx.arcTo(x, y + height, x, y, radius);
+    ctx.arcTo(x, y, x + width, y, radius);
+    ctx.closePath();
+    ctx.fill();
+}
+
+// And for the path version
+function roundedRectPath(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + width, y, x + width, y + height, radius);
+    ctx.arcTo(x + width, y + height, x, y + height, radius);
+    ctx.arcTo(x, y + height, x, y, radius);
+    ctx.arcTo(x, y, x + width, y, radius);
+}
+// Log attendance for a recognized employee
 async function logAttendance(employeeName) {
     try {
         const today = new Date();
         const currentTime = today.toLocaleTimeString();
         const currentDate = today.toISOString().split('T')[0];
         
-        // Improved logic for entry/exit determination
-        let isEntry = true;
+        // First, check if we already have attendance data for this person today
+        let existingAttendance = attendanceData[employeeName];
+        let isEntry = false;
         let shouldLog = true;
         
-        if (attendanceData[employeeName]) {
-            // They've been seen today
-            if (attendanceData[employeeName].entryTime && !attendanceData[employeeName].exitTime) {
+        // Get the current attendance status for today
+        if (!existingAttendance) {
+            // No existing data at all - this is definitely an entry
+            isEntry = true;
+            attendanceData[employeeName] = {
+                name: employeeName,
+                date: currentDate,
+                entryTime: currentTime,
+                exitTime: ''
+            };
+        } else if (existingAttendance.date === currentDate) {
+            // We have data for today - check entry/exit status
+            if (existingAttendance.entryTime && !existingAttendance.exitTime) {
                 // They entered but didn't exit - so this should be an exit
                 // Only log exit if sufficient time has passed (e.g., 30 minutes)
-                const entryTimeParts = attendanceData[employeeName].entryTime.split(':');
+                const entryTimeParts = existingAttendance.entryTime.split(':');
                 const entryDate = new Date();
                 entryDate.setHours(parseInt(entryTimeParts[0], 10));
                 entryDate.setMinutes(parseInt(entryTimeParts[1], 10));
@@ -818,35 +1146,31 @@ async function logAttendance(employeeName) {
                 
                 const timeDiffMinutes = (today - entryDate) / (1000 * 60);
                 
-                if (timeDiffMinutes >= 30) { // Minimum 30 minutes between entry and exit
+                if (timeDiffMinutes >= 5) { // Minimum time between entry and exit (reduced to 5 min for testing)
                     isEntry = false;
+                    attendanceData[employeeName].exitTime = currentTime;
                 } else {
                     // Too soon for an exit, don't log anything
                     shouldLog = false;
                 }
-            } else if (attendanceData[employeeName].entryTime && attendanceData[employeeName].exitTime) {
-                // They already completed a cycle today
-                // If it's been long enough since exit, allow a new entry
-                const exitTimeParts = attendanceData[employeeName].exitTime.split(':');
-                const exitDate = new Date();
-                exitDate.setHours(parseInt(exitTimeParts[0], 10));
-                exitDate.setMinutes(parseInt(exitTimeParts[1], 10));
-                exitDate.setSeconds(parseInt(exitTimeParts[2], 10));
-                
-                const timeDiffMinutes = (today - exitDate) / (1000 * 60);
-                
-                if (timeDiffMinutes >= 30) { // Minimum 30 minutes between exit and new entry
-                    isEntry = true;
-                    // Create a new record for this person today
-                    delete attendanceData[employeeName];
-                } else {
-                    // Too soon for a new entry, don't log anything
-                    shouldLog = false;
-                }
+            } else if (existingAttendance.entryTime && existingAttendance.exitTime) {
+                // Both entry and exit already logged for today - don't do anything
+                shouldLog = false;
+                console.log(`${employeeName} already has complete attendance for today`);
             }
+        } else {
+            // Data exists but for a different date - this is an entry for today
+            isEntry = true;
+            attendanceData[employeeName] = {
+                name: employeeName,
+                date: currentDate,
+                entryTime: currentTime,
+                exitTime: ''
+            };
         }
         
         if (shouldLog) {
+            // Create attendance record
             const attendanceRecord = {
                 name: employeeName,
                 date: currentDate,
@@ -854,8 +1178,10 @@ async function logAttendance(employeeName) {
                 exitTime: isEntry ? '' : currentTime
             };
             
-            // Store in local tracking object
-            attendanceData[employeeName] = attendanceRecord;
+            // Update local tracking object if not already updated
+            if (isEntry || !existingAttendance) {
+                attendanceData[employeeName] = attendanceRecord;
+            }
             
             // Send to backend
             await fetch('/api/log-attendance', {
@@ -877,13 +1203,30 @@ async function logAttendance(employeeName) {
     }
 }
         
-    // Speak greeting for recognized employee
+
+// Updated speak greeting function
 function speakGreeting(name) {
     // Get current entry/exit status from attendance data
-    const isEntry = !attendanceData[name] || !attendanceData[name].exitTime;
-    const greeting = isEntry ? 
-        `Welcome, ${name}. Your entry has been recorded.` : 
-        `Goodbye, ${name}. Your exit has been recorded.`;
+    const isEntry = attendanceData[name] && !attendanceData[name].exitTime;
+    let greeting;
+    
+    if (isEntry) {
+        // Entry greeting options
+        const greetings = [
+            `Welcome, ${name}. Your entry has been recorded.`,
+            `Hello ${name}! You've been checked in.`,
+            `Good day, ${name}. Your arrival has been noted.`
+        ];
+        greeting = greetings[Math.floor(Math.random() * greetings.length)];
+    } else {
+        // Exit greeting options
+        const greetings = [
+            `Goodbye, ${name}. Your exit has been recorded.`,
+            `See you tomorrow, ${name}. Your departure has been noted.`,
+            `Have a nice day, ${name}. You've been checked out.`
+        ];
+        greeting = greetings[Math.floor(Math.random() * greetings.length)];
+    }
     
     // Use browser's speech synthesis
     if ('speechSynthesis' in window) {

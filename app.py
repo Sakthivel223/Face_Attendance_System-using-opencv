@@ -181,18 +181,14 @@ def log_attendance_to_excel(name, entry_time=None, exit_time=None):
             "ExitTime": exit_time or ""
         }
         df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
+        # Voice message for entry
+        print(f"Welcome {name}, you have entered at {entry_time or datetime.now().strftime('%H:%M:%S')}")
     else:
         # Update existing record with exit time
-        if today_record.empty:
-            new_record = {
-                "Date": today,
-                "Name": name,
-                "EntryTime": entry_time or datetime.now().strftime("%H:%M:%S"),
-                "ExitTime": exit_time or ""
-            }
-            df = pd.concat([df, pd.DataFrame([new_record])], ignore_index=True)
-        else:
-            df.loc[(df["Date"] == today) & (df["Name"] == name), "ExitTime"] = exit_time or datetime.now().strftime("%H:%M:%S")
+        df["ExitTime"] = df["ExitTime"].astype(str)  # Ensure ExitTime is cast to string
+        df.loc[(df["Date"] == today) & (df["Name"] == name), "ExitTime"] = exit_time or datetime.now().strftime("%H:%M:%S")
+        # Voice message for exit
+        print(f"Goodbye {name}, you have exited at {exit_time or datetime.now().strftime('%H:%M:%S')}")
             
     # Save the updated DataFrame
     df.to_excel(file_path, index=False)
@@ -215,22 +211,6 @@ async def get_update(request: Request):
 async def get_known_faces():
     """Get all known faces"""
     return load_known_faces()
-
-train_script_path = "train_face.py"
-if not os.path.exists(train_script_path):
-    print(f"ERROR: Training script not found at {train_script_path}")
-    # Continue without running the script
-else:
-    # Attempt to run the script
-    try:
-        import subprocess
-        process = subprocess.run(["python", train_script_path], 
-                                check=True, 
-                                capture_output=True, 
-                                text=True)
-        print("Training output:", process.stdout)
-    except Exception as train_error:
-        print(f"Training script error: {train_error}")
 
 @app.post("/api/register-employee")
 async def register_employee(request: Request):
@@ -311,8 +291,22 @@ async def register_employee(request: Request):
         save_known_faces(known_faces)
         print("Saved known faces to file")
         
-        # Skip calling the training script for now
-        # We'll handle this separately
+        # Run the training script ONLY after a successful registration
+        train_script_path = "train_face.py"
+        if os.path.exists(train_script_path):
+            try:
+                import subprocess
+                print("Running training script after registration...")
+                process = subprocess.run(["python", train_script_path], 
+                                        check=True, 
+                                        capture_output=True, 
+                                        text=True)
+                print("Training output:", process.stdout)
+            except Exception as train_error:
+                print(f"Training script error after registration: {train_error}")
+                # Continue even if training fails - we'll log the error but not fail the registration
+        else:
+            print(f"WARNING: Training script not found at {train_script_path}")
         
         return {"success": True, "message": f"Employee {name} registered successfully"}
     
@@ -330,7 +324,6 @@ async def log_attendance(request: Request):
         # Parse request body
         data = await request.json()
         name = data.get("name")
-        date = data.get("date")
         entry_time = data.get("entryTime")
         exit_time = data.get("exitTime")
         
@@ -499,6 +492,51 @@ async def download_report(report_name: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Add this after the existing directories setup
+@app.post("/api/save-unknown-face")
+async def save_unknown_face(request: Request):
+    """Save an unknown face image to a separate folder outside Dataset"""
+    try:
+        # Parse request body
+        data = await request.json()
+        image_data = data.get("imageData")
+        filename = data.get("filename")
+        
+        if not image_data or not filename:
+            raise HTTPException(status_code=400, detail="Image data and filename are required")
+        
+        # Create UnknownFaces directory outside Dataset if it doesn't exist
+        # This addresses the requirement to store unknown faces outside Dataset folder
+        unknown_dir = os.path.join("UnknownFaces")
+        os.makedirs(unknown_dir, exist_ok=True)
+        
+        # Create a subdirectory for multiple faces if needed
+        if "multi-" in filename:
+            multi_dir = os.path.join(unknown_dir, "MultipleFaces")
+            os.makedirs(multi_dir, exist_ok=True)
+            save_dir = multi_dir
+        else:
+            save_dir = unknown_dir
+        
+        # Convert base64 to image
+        # Remove the data URL prefix if present
+        if "base64," in image_data:
+            image_data = image_data.split("base64,")[1]
+            
+        # Decode base64 string
+        img_data = base64.b64decode(image_data)
+        
+        # Save the image
+        file_path = os.path.join(save_dir, filename)
+        with open(file_path, "wb") as f:
+            f.write(img_data)
+        
+        return {"success": True, "message": "Unknown face saved successfully to separate folder"}
+    
+    except Exception as e:
+        print(f"Error saving unknown face: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
 # Run the app
 if __name__ == "__main__":
     import uvicorn

@@ -879,9 +879,11 @@ function startFaceDetection() {
 }
 
 // Draw a temporary face box overlay
+// Corrected drawFaceBox function for first file
 function drawFaceBox(box) {
     // Create a temporary overlay canvas
     const overlay = document.createElement('canvas');
+    // Match overlay dimensions to video display dimensions
     overlay.width = video.videoWidth;
     overlay.height = video.videoHeight;
     overlay.style.position = 'absolute';
@@ -893,10 +895,27 @@ function drawFaceBox(box) {
     
     const ctx = overlay.getContext('2d');
     
-    // Draw the box
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(46, 204, 113, 0.8)'; // Green
-    ctx.strokeRect(box.x, box.y, box.width, box.height);
+    // Calculate scaling factors between canvas and display
+    const scaleX = overlay.width / canvas.width;
+    const scaleY = overlay.height / canvas.height;
+    
+    // Scale the box coordinates
+    const scaledBox = {
+        x: box.x * scaleX,
+        y: box.y * scaleY,
+        width: box.width * scaleX,
+        height: box.height * scaleY
+    };
+    
+    // Draw the box with improved styling
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(46, 204, 113, 1)'; // Brighter green
+    ctx.strokeRect(scaledBox.x, scaledBox.y, scaledBox.width, scaledBox.height);
+    
+    // Add additional highlight
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; // White outer glow
+    ctx.lineWidth = 6;
+    ctx.strokeRect(scaledBox.x - 3, scaledBox.y - 3, scaledBox.width + 6, scaledBox.height + 6);
     
     // Add to DOM briefly
     video.parentElement.appendChild(overlay);
@@ -908,7 +927,6 @@ function drawFaceBox(box) {
         }
     }, 300);
 }
-
 // Start the automated capture process
 // Ensure the auto-capture stops when we reach the required number
 async function startCapture() {
