@@ -1112,147 +1112,301 @@ function roundedRectPath(ctx, x, y, width, height, radius) {
     ctx.arcTo(x, y, x + width, y, radius);
 }
 // Log attendance for a recognized employee
+// Improved attendance logging function
 async function logAttendance(employeeName) {
     try {
+        // Debounce to prevent multiple submissions within 3 seconds
+        if (window.lastAttendanceLog && ((new Date()) - window.lastAttendanceLog) < 3000) {
+            console.log("Attendance logging throttled, please wait a few seconds");
+            return null;
+        }
+        
+        // Record this attempt
+        window.lastAttendanceLog = new Date();
+        
         const today = new Date();
         const currentTime = today.toLocaleTimeString();
-        const currentDate = today.toISOString().split('T')[0];
         
-        // First, check if we already have attendance data for this person today
-        let existingAttendance = attendanceData[employeeName];
-        let isEntry = false;
-        let shouldLog = true;
+        console.log(`Attempting to log attendance for ${employeeName} at ${currentTime}`);
         
-        // Get the current attendance status for today
-        if (!existingAttendance) {
-            // No existing data at all - this is definitely an entry
-            isEntry = true;
-            attendanceData[employeeName] = {
-                name: employeeName,
-                date: currentDate,
-                entryTime: currentTime,
-                exitTime: ''
-            };
-        } else if (existingAttendance.date === currentDate) {
-            // We have data for today - check entry/exit status
-            if (existingAttendance.entryTime && !existingAttendance.exitTime) {
-                // They entered but didn't exit - so this should be an exit
-                // Only log exit if sufficient time has passed (e.g., 30 minutes)
-                const entryTimeParts = existingAttendance.entryTime.split(':');
-                const entryDate = new Date();
-                entryDate.setHours(parseInt(entryTimeParts[0], 10));
-                entryDate.setMinutes(parseInt(entryTimeParts[1], 10));
-                entryDate.setSeconds(parseInt(entryTimeParts[2], 10));
-                
-                const timeDiffMinutes = (today - entryDate) / (1000 * 60);
-                
-                if (timeDiffMinutes >= 5) { // Minimum time between entry and exit (reduced to 5 min for testing)
-                    isEntry = false;
-                    attendanceData[employeeName].exitTime = currentTime;
-                } else {
-                    // Too soon for an exit, don't log anything
-                    shouldLog = false;
-                }
-            } else if (existingAttendance.entryTime && existingAttendance.exitTime) {
-                // Both entry and exit already logged for today - don't do anything
-                shouldLog = false;
-                console.log(`${employeeName} already has complete attendance for today`);
-            }
-        } else {
-            // Data exists but for a different date - this is an entry for today
-            isEntry = true;
-            attendanceData[employeeName] = {
-                name: employeeName,
-                date: currentDate,
-                entryTime: currentTime,
-                exitTime: ''
-            };
-        }
+        // Let the server determine if this is an entry or exit
+        const attendanceRecord = {
+            name: employeeName,
+            timestamp: currentTime,
+            action: "auto"  // Let server decide based on today's records
+        };
         
-        if (shouldLog) {
-            // Create attendance record
-            const attendanceRecord = {
-                name: employeeName,
-                date: currentDate,
-                entryTime: isEntry ? currentTime : (attendanceData[employeeName]?.entryTime || ''),
-                exitTime: isEntry ? '' : currentTime
-            };
-            
-            // Update local tracking object if not already updated
-            if (isEntry || !existingAttendance) {
-                attendanceData[employeeName] = attendanceRecord;
+        // Send to backend
+        const response = await fetch('/api/log-attendance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(attendanceRecord)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Update local tracking data if needed
+            if (!attendanceData[employeeName]) {
+                attendanceData[employeeName] = { name: employeeName };
             }
             
-            // Send to backend
-            await fetch('/api/log-attendance', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(attendanceRecord)
-            });
+            // Play appropriate greeting based on entry/exit
+            if (result.action === "entry") {
+                attendanceData[employeeName].entryTime = currentTime;
+                speakGreeting(employeeName, true);
+                console.log(`Logged entry for ${employeeName} at ${currentTime}`);
+                
+                // Update UI or notification
+                showNotification(`Entry recorded for ${employeeName}`, "success");
+            } else if (result.action === "exit") {
+                attendanceData[employeeName].exitTime = currentTime;
+                speakGreeting(employeeName, false);
+                console.log(`Logged exit for ${employeeName} at ${currentTime}`);
+                
+                // Update UI or notification
+                showNotification(`Exit recorded for ${employeeName}`, "success");
+            }
             
+            // Update attendance display if needed
             updateTodayAttendance();
-            
-            console.log(`Logged ${isEntry ? 'entry' : 'exit'} for ${employeeName} at ${currentTime}`);
-            return isEntry; // Return isEntry flag for greeting message
+        } else {
+            console.log("Attendance log result:", result.message);
+            // Only show an alert for important messages, not for routine "already logged" messages
+            if (!result.message.includes("already has complete attendance")) {
+                showNotification(result.message, "info");
+            }
         }
         
-        return null; // Nothing logged
+        return result.success;
     } catch (error) {
         console.error('Error logging attendance:', error);
-        return null;
+        showNotification("Error logging attendance. Please try again.", "error");
+        return false;
     }
 }
-        
 
-// Updated speak greeting function
-function speakGreeting(name) {
-    // Get current entry/exit status from attendance data
-    const isEntry = attendanceData[name] && !attendanceData[name].exitTime;
+// Improved notification function (add this to your code)
+function showNotification(message, type = "info") {
+    // You can implement this based on your UI framework
+    // Example implementation:
+    const notificationArea = document.getElementById('notification-area') || document.createElement('div');
+    
+    if (!document.getElementById('notification-area')) {
+        notificationArea.id = 'notification-area';
+        notificationArea.style.position = 'fixed';
+        notificationArea.style.top = '20px';
+        notificationArea.style.right = '20px';
+        notificationArea.style.zIndex = '1000';
+        document.body.appendChild(notificationArea);
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.style.padding = '10px 20px';
+    notification.style.marginBottom = '10px';
+    notification.style.borderRadius = '4px';
+    notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+    notification.style.backgroundColor = type === 'success' ? '#4CAF50' : 
+                                         type === 'error' ? '#F44336' : 
+                                         type === 'warning' ? '#FF9800' : '#2196F3';
+    notification.style.color = 'white';
+    notification.textContent = message;
+    
+    notificationArea.appendChild(notification);
+    
+    // Remove notification after 5 seconds
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transition = 'opacity 0.5s';
+        setTimeout(() => notification.remove(), 500);
+    }, 5000);
+}
+
+// Improved speak greeting function with better voice synthesis
+function speakGreeting(name, isEntry) {
+    // Cancel any previous speech that might still be playing
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+    
     let greeting;
+    const currentHour = new Date().getHours();
+    let timeOfDay = "day";
+    
+    // Determine time of day for more natural greetings
+    if (currentHour < 12) {
+        timeOfDay = "morning";
+    } else if (currentHour < 17) {
+        timeOfDay = "afternoon";
+    } else {
+        timeOfDay = "evening";
+    }
     
     if (isEntry) {
-        // Entry greeting options
+        // More professional and varied entry greetings
         const greetings = [
-            `Welcome, ${name}. Your entry has been recorded.`,
-            `Hello ${name}! You've been checked in.`,
-            `Good day, ${name}. Your arrival has been noted.`
+            `Good ${timeOfDay}, ${name}. Your attendance has been recorded.`,
+            `Welcome, ${name}. Your entry time has been logged.`,
+            `Hello ${name}. You've been checked in successfully.`,
+            `Good ${timeOfDay}, ${name}. Your arrival has been noted in the system.`
         ];
         greeting = greetings[Math.floor(Math.random() * greetings.length)];
     } else {
-        // Exit greeting options
+        // More professional and varied exit greetings
         const greetings = [
             `Goodbye, ${name}. Your exit has been recorded.`,
-            `See you tomorrow, ${name}. Your departure has been noted.`,
-            `Have a nice day, ${name}. You've been checked out.`
+            `Thank you for your work today, ${name}. Your exit time has been logged.`,
+            `Have a good ${timeOfDay}, ${name}. You've been checked out successfully.`,
+            `Your departure has been noted, ${name}. See you next time.`
         ];
         greeting = greetings[Math.floor(Math.random() * greetings.length)];
     }
     
-    // Use browser's speech synthesis
+    console.log(`Speaking greeting: ${greeting}`);
+    
+    // Play appropriate sound effect if available
+    const soundFile = isEntry ? 'entry-sound.mp3' : 'exit-sound.mp3';
+    playSound(soundFile);
+    
+    // Improved speech synthesis with better settings
     if ('speechSynthesis' in window) {
         const utterance = new SpeechSynthesisUtterance(greeting);
-        window.speechSynthesis.speak(utterance);
+        
+        // Adjust voice settings for better quality
+        utterance.rate = 0.9;  // Slightly slower than default
+        utterance.pitch = 1.0;  // Normal pitch
+        utterance.volume = 1.0;  // Full volume
+        
+        // Try to use a higher quality voice if available
+        const voices = window.speechSynthesis.getVoices();
+        const preferredVoices = voices.filter(v => 
+            v.name.includes('Google') || 
+            v.name.includes('Microsoft') || 
+            v.name.includes('Premium')
+        );
+        
+        if (preferredVoices.length > 0) {
+            utterance.voice = preferredVoices[0];
+        }
+        
+        // Wait a moment before speaking to ensure any previous speech is fully stopped
+        setTimeout(() => {
+            window.speechSynthesis.speak(utterance);
+        }, 300);
     }
 }
-        // Update system metrics display
-        function updateSystemMetrics() {
-            // Update system uptime
-            const currentTime = new Date();
-            const uptimeHours = Math.floor((currentTime - systemStartTime) / (1000 * 60 * 60));
-            systemUptimeElement.textContent = `${uptimeHours}h`;
+
+// Helper function to play sound effects
+function playSound(soundFile) {
+    try {
+        const audio = new Audio(`/sounds/${soundFile}`);
+        audio.volume = 0.5;  // Set volume to 50%
+        audio.play().catch(err => {
+            console.log('Could not play sound effect:', err);
+        });
+    } catch (error) {
+        console.log('Error playing sound effect:', error);
+    }
+}
+// Improved function to get registered employees count
+async function updateTotalEmployees() {
+    try {
+        // Method 1: Try to get count from known_faces.json
+        const response = await fetch('/api/employee-count');
+        
+        if (response.ok) {
+            const data = await response.json();
+            totalEmployeesElement.textContent = data.count;
+            return;
         }
         
-        // Update total employees count
-        function updateTotalEmployees() {
+        // Method 2: Fallback to counting loaded face encodings
+        if (knownFaces && knownFaces.length > 0) {
             totalEmployeesElement.textContent = knownFaces.length;
+            return;
         }
         
-        // Update today's attendance count
-        function updateTodayAttendance() {
-            const uniqueAttendees = Object.keys(attendanceData).length;
-            todayAttendanceElement.textContent = uniqueAttendees;
+        // Method 3: Last resort - check dataset folders
+        const folderResponse = await fetch('/api/dataset-folders');
+        if (folderResponse.ok) {
+            const folderData = await folderResponse.json();
+            totalEmployeesElement.textContent = folderData.count;
+            return;
         }
         
+        console.error('Failed to retrieve employee count from any source');
+    } catch (error) {
+        console.error('Error updating total employees:', error);
+    }
+}
+
+// Simplified function to get today's attendance count
+async function updateTodayAttendance() {
+    try {
+        // Get today's date in format YYYY-MM-DD
+        const today = new Date();
+        const dateString = today.toISOString().split('T')[0];
+        
+        // Request attendance data for today from backend
+        const response = await fetch(`/api/today-attendance?date=${dateString}`);
+        
+        if (!response.ok) {
+            throw new Error(`Failed to get attendance data: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Update the display with unique attendees count
+        todayAttendanceElement.textContent = data.count || 0;
+        
+        return data.count;
+    } catch (error) {
+        console.error('Error updating today\'s attendance:', error);
+        // Fallback to local data if available
+        if (typeof attendanceData === 'object') {
+            todayAttendanceElement.textContent = Object.keys(attendanceData).length;
+        } else {
+            todayAttendanceElement.textContent = "0";
+        }
+    }
+}
+// Improved comprehensive system metrics update function
+function updateSystemMetrics() {
+    // Update system uptime
+    const currentTime = new Date();
+    const uptimeMs = currentTime - systemStartTime;
+    
+    // Calculate hours, minutes for better display
+    const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
+    const uptimeMinutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    // Format as "Xh Ym" for better readability
+    systemUptimeElement.textContent = uptimeHours > 0 
+        ? `${uptimeHours}h ${uptimeMinutes}m` 
+        : `${uptimeMinutes}m`;
+    
+    // Update employee count and attendance metrics
+    updateTotalEmployees();
+    updateTodayAttendance();
+    
+    // Log update for monitoring
+    console.log(`System metrics updated at ${currentTime.toLocaleTimeString()}`);
+}
+
+// Initialize metrics update when document loads
+document.addEventListener('DOMContentLoaded', () => {
+    // Set initial system start time
+    systemStartTime = new Date();
+    
+    // Perform initial update
+    updateSystemMetrics();
+    
+    // Schedule regular updates every minute
+    setInterval(updateSystemMetrics, 60000);
+    
+    console.log('System metrics monitoring initialized');
+});
         // Show toast notification
         function showToast(message, type = 'info') {
             const toast = document.getElementById('toast');

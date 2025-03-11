@@ -808,9 +808,15 @@ async function loadFaceDetectionModel() {
         throw error;
     }
 }
-
-// Start continuous face detection
+// Enhanced continuous face detection
 function startFaceDetection() {
+    // Object to track face stability over time
+    let faceStabilityCounter = 0;
+    const STABILITY_THRESHOLD = 5; // Number of consistent detections needed
+
+    // Previous face position for stability tracking
+    let prevFacePosition = null;
+
     // Check for face in video feed every 300ms
     const faceCheckInterval = setInterval(async () => {
         if (!video.srcObject) {
@@ -829,16 +835,18 @@ function startFaceDetection() {
             if (detections.length === 0) {
                 feedbackMessage.textContent = "No face detected. Please position your face in the camera.";
                 detectedFace = null;
+                faceStabilityCounter = 0;
                 return;
             }
             
             if (detections.length > 1) {
                 feedbackMessage.textContent = "Multiple faces detected. Please ensure only the employee is in frame.";
                 detectedFace = null;
+                faceStabilityCounter = 0;
                 return;
             }
             
-            // Single face detected - good!
+            // Single face detected
             const detection = detections[0];
             const box = detection.box;
             
@@ -848,6 +856,7 @@ function startFaceDetection() {
             if (box.width < minFaceSize) {
                 feedbackMessage.textContent = "Please move closer to the camera.";
                 detectedFace = null;
+                faceStabilityCounter = 0;
                 return;
             }
             
@@ -862,15 +871,49 @@ function startFaceDetection() {
             if (Math.abs(centerX - faceX) > maxOffset || Math.abs(centerY - faceY) > maxOffset) {
                 feedbackMessage.textContent = "Please center your face in the frame.";
                 detectedFace = null;
+                faceStabilityCounter = 0;
                 return;
             }
             
-            // Face is good for capture!
-            feedbackMessage.textContent = "Face detected properly. Ready for capture!";
-            detectedFace = detection;
+            // Check face stability
+            if (prevFacePosition) {
+                const movementX = Math.abs(prevFacePosition.x - faceX);
+                const movementY = Math.abs(prevFacePosition.y - faceY);
+                const movementThreshold = canvas.width * 0.01; // 1% movement threshold
+                
+                if (movementX > movementThreshold || movementY > movementThreshold) {
+                    // Face moved too much
+                    faceStabilityCounter = 0;
+                    feedbackMessage.textContent = "Please hold still for a clear capture.";
+                } else {
+                    // Face is stable
+                    faceStabilityCounter++;
+                }
+            }
             
-            // Temporarily visualize the face box
-            drawFaceBox(box);
+            // Update previous face position
+            prevFacePosition = { x: faceX, y: faceY };
+            
+            // Face position is good, now check lighting
+            const brightness = calculateBrightness(context, box);
+            if (brightness < 50) {
+                feedbackMessage.textContent = "Poor lighting. Please move to a better lit area.";
+                detectedFace = null;
+                return;
+            }
+            
+            // Only set face as detected if it's stable enough
+            if (faceStabilityCounter >= STABILITY_THRESHOLD) {
+                // Face is good for capture!
+                feedbackMessage.textContent = "Face detected properly. Ready for capture!";
+                detectedFace = detection;
+                
+                // Temporarily visualize the face box with quality indicator
+                drawFaceBox(box, true); // true indicates good quality
+            } else {
+                feedbackMessage.textContent = "Stabilizing... Please hold still.";
+                drawFaceBox(box, false); // false indicates still stabilizing
+            }
             
         } catch (error) {
             console.error('Error in face detection:', error);
@@ -878,9 +921,27 @@ function startFaceDetection() {
     }, 300);
 }
 
-// Draw a temporary face box overlay
-// Corrected drawFaceBox function for first file
-function drawFaceBox(box) {
+// Helper function to calculate brightness in a region
+function calculateBrightness(context, box) {
+    const imageData = context.getImageData(box.x, box.y, box.width, box.height);
+    const data = imageData.data;
+    let brightness = 0;
+    
+    // Sample every 4th pixel for performance
+    for (let i = 0; i < data.length; i += 16) {
+        const r = data[i];
+        const g = data[i + 1];
+        const b = data[i + 2];
+        
+        // Calculate relative luminance
+        brightness += (0.299 * r + 0.587 * g + 0.114 * b);
+    }
+    
+    return brightness / (data.length / 16); // Average brightness
+}
+
+// Enhanced face box drawing with quality indicator
+function drawFaceBox(box, isGoodQuality) {
     // Create a temporary overlay canvas
     const overlay = document.createElement('canvas');
     // Match overlay dimensions to video display dimensions
@@ -907,9 +968,34 @@ function drawFaceBox(box) {
         height: box.height * scaleY
     };
     
-    // Draw the box with improved styling
+    // Draw the box with quality-based styling
     ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(46, 204, 113, 1)'; // Brighter green
+    
+    if (isGoodQuality) {
+        // Green for good quality
+        ctx.strokeStyle = 'rgba(46, 204, 113, 1)';
+        
+        // Add checkmark icon for good quality
+        ctx.fillStyle = 'rgba(46, 204, 113, 1)';
+        ctx.beginPath();
+        const checkSize = scaledBox.width * 0.1;
+        const checkX = scaledBox.x + scaledBox.width + 10;
+        const checkY = scaledBox.y - 10;
+        ctx.arc(checkX, checkY, checkSize, 0, 2 * Math.PI);
+        ctx.fill();
+        
+        // Draw checkmark
+        ctx.strokeStyle = 'white';
+        ctx.beginPath();
+        ctx.moveTo(checkX - checkSize/2, checkY);
+        ctx.lineTo(checkX - checkSize/5, checkY + checkSize/2);
+        ctx.lineTo(checkX + checkSize/2, checkY - checkSize/3);
+        ctx.stroke();
+    } else {
+        // Yellow for still stabilizing
+        ctx.strokeStyle = 'rgba(241, 196, 15, 1)';
+    }
+    
     ctx.strokeRect(scaledBox.x, scaledBox.y, scaledBox.width, scaledBox.height);
     
     // Add additional highlight
@@ -927,8 +1013,8 @@ function drawFaceBox(box) {
         }
     }, 300);
 }
-// Start the automated capture process
-// Ensure the auto-capture stops when we reach the required number
+
+// Improved startCapture function
 async function startCapture() {
     if (captureInProgress) return;
     
@@ -945,20 +1031,44 @@ async function startCapture() {
     startCaptureBtn.disabled = true;
     takeSingleImageBtn.disabled = true;
     
-    // Take multiple captures
+    // Show progress initialization
+    updateCaptureUI();
+    
+    // Take multiple captures with retry logic
+    let attemptCount = 0;
+    const maxAttempts = TOTAL_CAPTURES * 2; // Allow twice as many attempts as needed captures
+    
     const captureInterval = setInterval(async () => {
-        if (captureCount >= TOTAL_CAPTURES) {
+        // Check if we have enough images or too many attempts
+        if (captureCount >= TOTAL_CAPTURES || attemptCount >= maxAttempts) {
             clearInterval(captureInterval);
+            
+            if (captureCount >= TOTAL_CAPTURES) {
+                showToast('Capture complete!', 'success');
+            } else {
+                showToast(`Could only capture ${captureCount} clear images after ${attemptCount} attempts.`, 'warning');
+            }
+            
             await finalizeCaptureProcess();
             return;
         }
         
-        if (detectedFace) {
-            await takeCaptureWithFaceDetection();
-        } else {
-            // Skip this attempt if no face is detected, but continue trying
+        attemptCount++;
+        
+        // Only increment attempts, not captures, if face isn't detected
+        if (!detectedFace) {
             showToast('No face detected. Adjusting position...', 'info');
+            return; // Skip this attempt
         }
+        
+        // Attempt to take a capture, only counts as success if returned true
+        const captureSuccess = await takeCaptureWithFaceDetection();
+        
+        // If unsuccessful, don't increment captureCount (it's handled in takeCaptureWithFaceDetection)
+        if (!captureSuccess) {
+            showToast('Trying again for a clearer image...', 'info');
+        }
+        
     }, 1500); // Take image every 1.5 seconds
 }
 
@@ -976,17 +1086,33 @@ async function takeSingleImage() {
     }
 }
 
-// Take a capture with face detection
+// Improved takeCaptureWithFaceDetection function
 async function takeCaptureWithFaceDetection() {
     // Draw current video frame to canvas
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     try {
+        if (!detectedFace) {
+            showToast('No face detected. Please position your face correctly.', 'error');
+            return false;
+        }
+        
         // Get the face box
         const box = detectedFace.box;
         
-        // Calculate expanded box for context (1m around face)
+        // Check for image quality metrics
+        // 1. Check if face is large enough (already implemented in face detection)
+        // 2. Check for blur using variance of Laplacian
+        const faceRegion = context.getImageData(box.x, box.y, box.width, box.height);
+        const blurScore = calculateBlurScore(faceRegion);
+        
+        if (blurScore < 100) { // Adjust threshold as needed
+            showToast('Image too blurry. Please keep still.', 'warning');
+            return false;
+        }
+        
+        // Calculate expanded box for context (1.5x around face)
         const expandFactor = 1.5;
         const expandedBox = {
             x: Math.max(0, box.x - box.width * (expandFactor - 1) / 2),
@@ -1008,38 +1134,59 @@ async function takeCaptureWithFaceDetection() {
         );
         
         // Convert to base64 data URL
-        const imageData = croppedCanvas.toDataURL('image/jpeg', 0.9);
-        if (detectedFace) {
+        const imageData = croppedCanvas.toDataURL('image/jpeg', 0.92);
+        
+        // Only add to captured images if face is detected (fixing the duplicate push bug)
         capturedImages.push(imageData);
-        } 
-        else {
-        showToast('No face detected in the image. Please try again.', 'error');
-        }
-
+        captureCount++;
+        updateCaptureUI();
         
-        if (detectedFace) {
-            capturedImages.push(imageData);
-            captureCount++;
-            updateCaptureUI();
-            
-            // Play capture sound and show preview
-            const captureSound = new Audio('/sounds/camera-shutter.mp3');
-            captureSound.play().catch(e => console.log('Audio play error:', e));
-            
-            const imgElement = document.createElement('img');
-            imgElement.src = imageData;
-            imgElement.className = 'captured-image';
-            capturedImagesContainer.appendChild(imgElement);
-        } else {
-            showToast('No face detected in the image. Please try again.', 'error');
-        }
+        // Play capture sound and show preview
+        const captureSound = new Audio('/sounds/camera-shutter.mp3');
+        captureSound.play().catch(e => console.log('Audio play error:', e));
         
+        const imgElement = document.createElement('img');
+        imgElement.src = imageData;
+        imgElement.className = 'captured-image';
+        capturedImagesContainer.appendChild(imgElement);
+        
+        return true;
     } catch (error) {
         console.error('Error capturing image:', error);
         showToast('Error capturing image', 'error');
+        return false;
     }
 }
 
+// Helper function to calculate blur score using variance
+function calculateBlurScore(imageData) {
+    const data = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+    
+    // Convert to grayscale if needed
+    const grayscale = new Uint8Array(width * height);
+    for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+        grayscale[j] = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    }
+    
+    // Calculate variance (simplified Laplacian)
+    let sum = 0;
+    let mean = 0;
+    
+    // Calculate mean
+    for (let i = 0; i < grayscale.length; i++) {
+        mean += grayscale[i];
+    }
+    mean /= grayscale.length;
+    
+    // Calculate variance
+    for (let i = 0; i < grayscale.length; i++) {
+        sum += Math.pow(grayscale[i] - mean, 2);
+    }
+    
+    return sum / grayscale.length;
+}
 // Update capture UI elements
 function updateCaptureUI() {
     const progress = (captureCount / TOTAL_CAPTURES) * 100;
@@ -1047,7 +1194,7 @@ function updateCaptureUI() {
     captureStatus.textContent = `Captured ${captureCount}/${TOTAL_CAPTURES} images`;
 }
 
-// Finalize the capture process
+// Finalize the capture process with improved training triggering
 async function finalizeCaptureProcess() {
     if (capturedImages.length < TOTAL_CAPTURES) {
         showToast(`Only captured ${capturedImages.length} images. Need ${TOTAL_CAPTURES} for best results.`, 'info');
@@ -1058,9 +1205,10 @@ async function finalizeCaptureProcess() {
     takeSingleImageBtn.disabled = false;
     
     try {
-        // Send captured images to server
+        // Show loading overlay
         loadingOverlay.style.display = 'flex';
         
+        // Send captured images to server
         const response = await fetch('/api/register-employee', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1071,7 +1219,29 @@ async function finalizeCaptureProcess() {
         });
         
         if (!response.ok) {
-            throw new Error('Server error');
+            throw new Error('Server error during registration');
+        }
+        
+        const result = await response.json();
+        
+        if (!result.success) {
+            throw new Error(result.message || 'Unknown error during registration');
+        }
+        
+        // Explicitly trigger training after successful registration
+        const trainingResponse = await fetch('/api/trigger-training', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: employeeName
+            })
+        });
+        
+        if (!trainingResponse.ok) {
+            console.warn('Training may not have completed successfully');
+            showToast('Registration successful, but training may need manual activation', 'warning');
+        } else {
+            showToast('Employee registered and training completed successfully!', 'success');
         }
         
         // Stop camera
@@ -1088,10 +1258,9 @@ async function finalizeCaptureProcess() {
         employeeDetailsElement.textContent = `Name: ${employeeName}`;
         updateStepUI(3);
         
-        showToast('Employee registered successfully!', 'success');
     } catch (error) {
         console.error('Error registering employee:', error);
-        showToast('Failed to register employee', 'error');
+        showToast(`Failed to register employee: ${error.message}`, 'error');
     } finally {
         loadingOverlay.style.display = 'none';
     }
