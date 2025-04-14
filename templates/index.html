@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Face Recognition System</title>
+    <link rel="icon" href="static/icons/favicon_ico/favicon-32x32.png" type="image/png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.3.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
     <style>
@@ -65,6 +66,7 @@
         }
         
         .video-container {
+            position: relative; 
             width: 100%;
             max-width: 800px;
             height: 600px;
@@ -81,8 +83,22 @@
             width: 100%;
             height: 100%;
             object-fit: cover;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1; /* Ensure the video is behind the image initially */
         }
-        
+        .video-placeholder {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute; /* Places the image over the video */
+            top: 0;
+            left: 0;
+            display: block; /* Ensure it's visible initially */
+            z-index: 2; /* Ensure the placeholder is always on top */
+            background-color: #000; /* Prevents a transparent gap */
+        }
         .panel {
             background-color: white;
             padding: 25px;
@@ -410,14 +426,18 @@
         </div>
     </header>
     
-    <div class="video-container">
-        <video id="videoFeed" class="video-feed" autoplay playsinline></video>
-        <div class="loading-overlay" id="loadingOverlay">
-            <div class="spinner"></div>
-            <p>Initializing camera...</p>
+    <div class="container content">
+        <div class="video-container">
+            <video id="videoFeed" class="video-feed" autoplay playsinline></video>
+<img src="/static/icons/placeholder.webp" alt="Video Placeholder" class="video-placeholder" style="width: 100%; height: 100%; object-fit: cover; display: block;" />
+
+
+            <div class="loading-overlay" id="loadingOverlay">
+                <div class="spinner"></div>
+                <p>Initializing camera...</p>
+            </div>
         </div>
-    </div>
-         
+        
         <div class="panel">
             <h2><i class="fas fa-shield-alt"></i> System Status</h2>
             <p>Recognition Status: <span id="status" class="status-inactive">Stopped</span></p>
@@ -472,686 +492,939 @@
     </footer>
     
     <script>
-// System start time (for uptime calculation)
-const startTime = new Date();
-let recognitionActive = false;
-let cameraInitialized = false;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-let reconnectDelay = 5000; // Start with 5 seconds, will increase with backoff
-let currentWebSocket = null;
-let peerConnection = null;
-
-// Initialize the Web Speech API
-const synth = window.speechSynthesis || null;
-let isSpeaking = false;
-
-// Function to speak a message
-function speakMessage(message) {
-    if (!synth || isSpeaking) return; // Avoid overlapping speech or if not supported
+        // Global variables
+        let video = document.getElementById('videoFeed');
+        let isRecognitionRunning = false;
+        let faceDetectionModel;
+        let knownFaces = [];
+        let recognitionInterval;
+        let canvas;
+        let attendanceData = {};
+        let systemStartTime = new Date();
+        let lastDetectedTime = {};
+        const DETECTION_DELAY = 5000; 
+        
+        // DOM Elements
+        const statusElement = document.getElementById('status');
+        const cameraStatusElement = document.getElementById('cameraStatus');
+        const lastRecognitionElement = document.getElementById('lastRecognition');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const totalEmployeesElement = document.getElementById('totalEmployees');
+        const todayAttendanceElement = document.getElementById('todayAttendance');
+        const systemUptimeElement = document.getElementById('systemUptime');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        
+        // Initialize the system
+        document.addEventListener('DOMContentLoaded', async () => {
+            updateSystemMetrics();
+            setInterval(updateSystemMetrics, 60000); // Update metrics every minute
+            
+            // Create a hidden canvas for processing video frames
+            canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 480;
+            document.body.appendChild(canvas);
+            canvas.style.display = 'none';
+            
+            try {
+                await loadKnownFaces();
+                updateTotalEmployees();
+                updateTodayAttendance();
+                showToast('System initialized successfully', 'success');
+            } catch (error) {
+                console.error('Error initializing system:', error);
+                showToast('Failed to initialize system', 'error');
+            }
+        });
+        
+        // Face API initialization and model loading
+        async function loadFaceDetectionModel() {
+            if (faceDetectionModel) return; // Already loaded
+        
+            showToast('Loading face detection models...', 'info');
+            
+            try {
+                await faceapi.nets.ssdMobilenetv1.loadFromUri('/static/models');
+                await faceapi.nets.faceLandmark68Net.loadFromUri('/static/models');
+                await faceapi.nets.faceRecognitionNet.loadFromUri('/static/models');
+                
+                faceDetectionModel = true;
+                showToast('Face detection models loaded successfully', 'success');
+            } catch (error) {
+                console.error('Error loading face detection model:', error);
+                showToast('Failed to load face detection models', 'error');
+                faceDetectionModel = false;
+            }
+        }
+        
+        // Load known faces from server
+    async function loadKnownFaces() {
+    try {
+        const response = await fetch('/api/known-faces');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! Status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (!data || Object.keys(data).length === 0) {
+            console.error('Known faces data is empty!');
+            showToast('Warning: No known faces found in database', 'warning');
+            knownFaces = [];
+            return;
+        }
+        
+        knownFaces = Object.entries(data).map(([name, descriptor]) => {
+            // Validate descriptor
+            if (!descriptor || !Array.isArray(descriptor) || descriptor.length === 0) {
+                console.error(`Invalid descriptor for ${name}`);
+                return null;
+            }
+            
+            return {
+                name,
+                descriptor: new Float32Array(descriptor)
+            };
+        }).filter(face => face !== null); // Remove any invalid entries
+        
+        console.log(`Loaded ${knownFaces.length} known faces`);
+        
+        // Log descriptors statistics for debugging
+        if (knownFaces.length > 0) {
+            const sampleDescriptor = knownFaces[0].descriptor;
+            console.log(`Descriptor length: ${sampleDescriptor.length}`);
+            console.log(`Sample values: ${Array.from(sampleDescriptor.slice(0, 5))}`);
+        }
+    } catch (error) {
+        console.error('Error loading known faces:', error);
+        showToast('Failed to load employee data', 'error');
+        knownFaces = [];
+    }
+}
+        
+        // Start the recognition process
+        async function startRecognition() {
+    if (isRecognitionRunning) return;
     
-    // Wait for voices to be loaded
-    let voices = synth.getVoices();
-    if (voices.length === 0) {
-        // If voices aren't loaded yet, wait a bit and try again
-        setTimeout(() => speakMessage(message), 100);
+    loadingOverlay.style.display = 'flex';
+    
+    try {
+        await loadFaceDetectionModel();
+        
+        // Start the camera with higher resolution
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'user',
+                frameRate: { ideal: 30 } // Request higher frame rate
+            } 
+        });
+        
+        video.srcObject = stream;
+        cameraStatusElement.textContent = 'Active';
+        cameraStatusElement.className = 'status-active';
+        
+        // Wait for video to be ready
+        await new Promise(resolve => {
+            video.onloadedmetadata = () => {
+                video.play();
+                resolve();
+            };
+        });
+        
+        loadingOverlay.style.display = 'none';
+        document.querySelector('.video-placeholder').style.display = 'none';
+        
+        // Clear any previous detected faces to start fresh
+        clearDetectedFaces();
+        
+        // Start face recognition process
+        isRecognitionRunning = true;
+        statusElement.textContent = 'Running';
+        statusElement.className = 'status-active';
+        
+        // Start the animation frame loop
+        requestAnimationFrame(processVideoFrame);
+        
+        showToast('Face recognition started', 'success');
+    } catch (error) {
+        console.error('Error starting recognition:', error);
+        loadingOverlay.style.display = 'none';
+        showToast('Failed to start camera or recognition', 'error');
+    }
+}
+        
+        // Stop the recognition process
+        function stopRecognition() {
+    if (!isRecognitionRunning) return;
+    
+    // Just set the flag to false, the animation loop will stop on next frame
+    isRecognitionRunning = false;
+    
+    if (video.srcObject) {
+        const tracks = video.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+        video.srcObject = null;
+    }
+    
+    // Remove the overlay canvas
+    const videoContainer = video.parentElement;
+    const overlay = videoContainer.querySelector('.face-overlay');
+    if (overlay) {
+        videoContainer.removeChild(overlay);
+    }
+    
+    // Update UI
+    statusElement.textContent = 'Stopped';
+    statusElement.className = 'status-inactive';
+    cameraStatusElement.textContent = 'Inactive';
+    cameraStatusElement.className = 'status-inactive';
+    
+    showToast('Face recognition stopped', 'info');
+    document.querySelector('.video-placeholder').style.display = 'block';
+}
+        
+// Fix the processVideoFrame function to ensure continuous rendering
+async function processVideoFrame() {
+    if (!video.srcObject || !isRecognitionRunning) {
+        // If not running, ensure we return immediately but maintain the loop
+        if (isRecognitionRunning) {
+            requestAnimationFrame(processVideoFrame);
+        }
         return;
     }
     
-    const utterance = new SpeechSynthesisUtterance(message);
-    // Find preferred voice or fallback to default
-    const preferredVoice = voices.find(voice => voice.name.includes("English"));
-    if (preferredVoice) {
-        utterance.voice = preferredVoice;
-    }
-    
-    utterance.onend = () => isSpeaking = false;
-    isSpeaking = true;
-    synth.speak(utterance);
-}
-
-// Initialize when document is loaded
-document.addEventListener('DOMContentLoaded', function () {
-    // Update uptime every minute
-    setInterval(updateUptime, 60000);
-    updateUptime(); // Call immediately to show initial uptime
-    
-    // Load initial stats
-    loadSystemStats();
-    
-    // Check system status
-    checkSystemStatus();
-    
-    // Set up button event listeners
-    document.getElementById('startBtn').addEventListener('click', startRecognition);
-    document.getElementById('stopBtn').addEventListener('click', stopRecognition);
-    
-    // Set up the register new employee button
-    const registerBtn = document.querySelector('button[onclick="window.location.href=\'/update\'"]');
-    if (registerBtn) {
-        registerBtn.onclick = null; // Remove the inline handler
-        registerBtn.addEventListener('click', function() {
-            showToast('Navigating to registration page...', 'info');
-            
-            // First check if the page exists
-            fetch('/update', { method: 'HEAD' })
-                .then(response => {
-                    if (response.ok) {
-                        window.location.href = '/update';
-                    } else {
-                        throw new Error(`Page not found (${response.status})`);
-                    }
-                })
-                .catch(error => {
-                    console.error('Navigation error:', error);
-                    showToast('Error: Registration page not available. Please check the server.', 'error');
-                });
-            
-            return false; // Prevent default action
-        });
-    }
-    
-    // Set up SSE listener for recognized faces
-    setupSSEListener();
-    
-    // Initialize WebRTC connection
-    initializeWebRTC();
-});
-
-function updateUptime() {
-    const now = new Date();
-    const uptimeHours = Math.floor((now - startTime) / (1000 * 60 * 60));
-    document.getElementById('systemUptime').textContent = `${uptimeHours}h`;
-}
-
-function updateStatusDisplay() {
-    fetch('/check_status')
-        .then(response => {
-            if (!response.ok) throw new Error(`Server returned ${response.status}`);
-            return response.json();
-        })
-        .then(data => {
-            // Update recognition status
-            const statusElement = document.getElementById('status');
-            const cameraStatusElement = document.getElementById('cameraStatus');
-            const lastRecognitionElement = document.getElementById('lastRecognition');
-
-            if (data.recognition_active) {
-                statusElement.innerHTML = '<span class="status-active">Active</span>';
-                recognitionActive = true;
-                
-                // Update video feed if active
-                updateVideoElement(true);
-            } else {
-                statusElement.innerHTML = '<span class="status-inactive">Inactive</span>';
-                recognitionActive = false;
-                
-                // Replace video with placeholder if not active
-                updateVideoElement(false);
-            }
-
-            // Update camera status
-            cameraStatusElement.textContent = data.camera_available === "available" 
-                ? "✅ Camera Active" 
-                : "❌ Camera Not Available";
-
-            // Force refresh event listener if not active
-            if (data.recognition_active && !window.facesEventSource) {
-                setupSSEListener();
-            }
-
-            // Update last recognition time
-            if (lastRecognitionElement && data.last_seen) {
-                lastRecognitionElement.textContent = new Date(data.last_seen).toLocaleTimeString();
-            }
-        })
-        .catch(error => console.error('Status update error:', error));
-}
-
-// Helper function to update video element
-function updateVideoElement(isActive) {
-    const videoFeed = document.getElementById('videoFeed');
-    if (!videoFeed) return;
-
-    if (isActive) {
-        if (videoFeed.tagName !== 'VIDEO') {
-            const videoElement = document.createElement('video');
-            videoElement.id = 'videoFeed';
-            videoElement.className = 'video-feed';
-            videoElement.autoplay = true;
-            videoElement.playsInline = true;
-            videoFeed.parentNode.replaceChild(videoElement, videoFeed);
-            
-            // Initialize WebRTC if video is active
-            if (peerConnection === null || peerConnection.connectionState === 'closed') {
-                initializeWebRTC();
-            }
-        }
-    } else {
-        if (videoFeed.tagName === 'VIDEO') {
-            const imgElement = document.createElement('img');
-            imgElement.id = 'videoFeed';
-            imgElement.className = 'video-feed';
-            imgElement.src = '/static/icons/placeholder.webp';
-            videoFeed.parentNode.replaceChild(imgElement, videoFeed);
-            
-            // Close WebRTC connection if video is inactive
-            closeWebRTCConnection();
-        } else if (videoFeed.tagName === 'IMG') {
-            videoFeed.src = '/static/icons/placeholder.webp';
-        }
-    }
-}
-
-// Call updateStatusDisplay() every 2 seconds to keep UI updated (less frequent for better performance)
-setInterval(updateStatusDisplay, 2000);
-
-// WebRTC implementation for video streaming
-async function initializeWebRTC() {
-    if (!recognitionActive) return;
-    
-    // Close existing connection if any
-    await closeWebRTCConnection();
+    // Draw the current video frame to the canvas
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
     
     try {
-        // Create new RTCPeerConnection
-        const iceServers = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ];
+        // Get the video container element
+        const videoContainer = video.parentElement;
         
-        peerConnection = new RTCPeerConnection({ iceServers });
+        // Make sure overlay exists and is properly configured
+        let overlay = videoContainer.querySelector('.face-overlay');
+        if (!overlay) {
+            overlay = document.createElement('canvas');
+            overlay.classList.add('face-overlay');
+            overlay.style.position = 'absolute';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.pointerEvents = 'none';
+            overlay.style.zIndex = '10';
+            videoContainer.appendChild(overlay);
+            console.log("Overlay created and appended to container");
+        }
         
-        // Set up event handlers
-        peerConnection.onicecandidate = event => {
-            if (event.candidate) {
-                sendIceCandidate(event.candidate);
-            }
-        };
+        // Always update overlay to match video dimensions exactly
+        const videoRect = video.getBoundingClientRect();
+        overlay.width = videoRect.width;
+        overlay.height = videoRect.height;
         
-        peerConnection.ontrack = event => {
-            const videoElement = document.getElementById('videoFeed');
-            if (videoElement && videoElement.tagName === 'VIDEO') {
-                videoElement.srcObject = event.streams[0];
-                videoElement.onloadedmetadata = () => {
-                    videoElement.play().catch(err => console.error('Error playing video:', err));
+        // Clear previous overlay drawing
+        const overlayCtx = overlay.getContext('2d', { willReadFrequently: true });
+        overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
+        
+        // Calculate scaling between hidden canvas and displayed video dimensions
+        const scaleX = videoRect.width / canvas.width;
+        const scaleY = videoRect.height / canvas.height;
+        
+        // Detect faces in the current frame
+        const detections = await faceapi.detectAllFaces(canvas)
+            .withFaceLandmarks()
+            .withFaceDescriptors();
+        
+        // Process and draw detected faces
+        if (detections.length > 0) {
+            // Process each detected face
+            for (const detection of detections) {
+                const matchResult = findBestMatch(detection.descriptor);
+                const box = detection.detection.box;
+                
+                // Scale the box coordinates to match the displayed video size
+                const boxExpansion = 0.2; // 20% larger
+                const scaledBox = {
+                    x: (box.x - (box.width * boxExpansion/2)) * scaleX,
+                    y: (box.y - (box.height * boxExpansion/2)) * scaleY,
+                    width: box.width * (1 + boxExpansion) * scaleX,
+                    height: box.height * (1 + boxExpansion) * scaleY
                 };
-            }
-        };
-        
-        peerConnection.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', peerConnection.iceConnectionState);
-            if (peerConnection.iceConnectionState === 'failed' || 
-                peerConnection.iceConnectionState === 'disconnected') {
-                // Try to reconnect after a delay
-                setTimeout(() => {
-                    if (recognitionActive) {
-                        initializeWebRTC();
+                
+                // Draw face box with improved visibility
+                if (matchResult.isMatch) {
+                    // Known face - green box
+                    drawEnhancedFaceBox(overlayCtx, scaledBox, matchResult.name, matchResult.confidence, true);
+                    
+                    // Handle attendance logging in the background
+                    const now = Date.now();
+                    if (!lastDetectedTime[matchResult.name] || now - lastDetectedTime[matchResult.name] > DETECTION_DELAY) {
+                        lastDetectedTime[matchResult.name] = now;
+                        setTimeout(async () => {
+                            const isEntry = await logAttendance(matchResult.name);
+                            if (isEntry !== null) {
+                                speakGreeting(matchResult.name);
+                            }
+                        }, 0);
                     }
-                }, 2000);
+                } else {
+                    // Unknown face - red box with "Unknown" label
+                    drawEnhancedFaceBox(overlayCtx, scaledBox, 'Unknown', 0, false);
+                    
+                    setTimeout(async () => {
+                        await saveUnknownFace(canvas, box, detections);
+                    }, 0);
+                }
             }
-        };
+            
+            // Update last recognition time
+            lastRecognitionElement.textContent = new Date().toLocaleTimeString();
+        }
         
-        // Create and send offer
-        const offer = await peerConnection.createOffer({
-            offerToReceiveVideo: true,
-            offerToReceiveAudio: false
+        // Ensure overlay is always visible
+        overlay.style.display = 'block';
+        
+    } catch (error) {
+        console.error('Error in face recognition:', error);
+    }
+    
+    // Always continue the animation loop while running
+    if (isRecognitionRunning) {
+        requestAnimationFrame(processVideoFrame);
+    }
+}
+
+// Simplified drawing function to ensure boxes appear correctly
+function drawEnhancedFaceBox(context, box, name, confidence, isKnown) {
+    // Box styling parameters - IMPROVED FOR VISIBILITY
+    const lineWidth = 6; // Increased from 4 to make the box much more visible
+    const mainColor = isKnown ? 'rgba(39, 174, 96, 1)' : 'rgba(231, 76, 60, 1)';
+    const glowColor = isKnown ? 'rgba(39, 174, 96, 0.7)' : 'rgba(231, 76, 60, 0.7)'; // Increased opacity
+    const confidenceText = isKnown ? `${(confidence * 100).toFixed(1)}%` : '';
+    
+    // Add stronger animation effect - more vibrant pulsing 
+    const pulseIntensity = Math.sin(Date.now() * 0.005) * 0.3 + 0.7; // More pronounced pulse
+    
+    // Reset any previous context settings
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalAlpha = 1;
+    
+    // Enhanced shadow for glow effect
+    context.shadowColor = glowColor;
+    context.shadowBlur = 20; // Increased from 15
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+    
+    // Draw main box with slightly rounded corners
+    context.lineWidth = lineWidth;
+    context.strokeStyle = mainColor;
+    
+    // Draw the box - use a simpler approach for better performance
+    context.beginPath();
+    context.rect(box.x, box.y, box.width, box.height);
+    context.stroke();
+    
+    // Prepare for text display - make label more visible
+    const fontSize = 16; // Increased from 14
+    const fontFamily = "'Segoe UI', Arial, sans-serif";
+    
+    // Ensure the name is measured correctly for width calculation
+    context.font = `bold ${fontSize}px ${fontFamily}`;
+    
+    // Draw a solid background rectangle for the name label
+    const nameWidth = context.measureText(name).width + 20; // Extra padding
+    const labelHeight = 30; // Taller label
+    
+    // Background for label
+    context.fillStyle = mainColor;
+    context.fillRect(box.x, Math.max(box.y - labelHeight - 5, 0), nameWidth, labelHeight);
+    
+    // Draw name text with enhanced visibility
+    context.fillStyle = 'white';
+    context.font = `bold ${fontSize}px ${fontFamily}`;
+    context.textBaseline = 'middle';
+    context.fillText(
+        name, 
+        box.x + 10, 
+        Math.max(box.y - labelHeight/2 - 5, labelHeight/2)
+    );
+    
+    // Draw confidence text if known face
+    if (isKnown && confidenceText) {
+        context.font = `${fontSize}px ${fontFamily}`;
+        context.fillStyle = 'rgba(255, 255, 255, 1)'; // Fully opaque
+        context.fillText(
+            confidenceText, 
+            box.x + nameWidth + 5, 
+            Math.max(box.y - labelHeight/2 - 5, labelHeight/2)
+        );
+    }
+}
+// Global array to track detected faces during a session
+let detectedFaces = [];
+let simultaneousFacesDetected = false;
+
+// Save unknown face to folder
+async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
+    try {
+        // Create a temporary canvas to hold just the face
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = faceBox.width;
+        tempCanvas.height = faceBox.height;
+        const tempCtx = tempCanvas.getContext('2d');
+        
+        // Extract face region from source canvas
+        const faceRegion = sourceCanvas.getContext('2d').getImageData(
+            faceBox.x, faceBox.y, faceBox.width, faceBox.height
+        );
+        tempCtx.putImageData(faceRegion, 0, 0);
+        
+        // Compute face descriptor for comparison
+        const faceDescriptor = await faceapi.computeFaceDescriptor(tempCanvas);
+        
+        // Check if face is already in known faces database
+        const matchResult = findBestMatch(faceDescriptor);
+        
+        // Check if multiple different faces are detected simultaneously
+        if (allFacesDetected && allFacesDetected.length > 1) {
+            simultaneousFacesDetected = true;
+            console.log(`Multiple faces detected: ${allFacesDetected.length}`);
+            
+            // Log all detected faces for debugging
+            console.log('All detected faces:', allFacesDetected);
+        }
+        
+        // If it's a match with confidence above threshold, don't save as unknown
+        if (matchResult.isMatch && matchResult.confidence > 0.75) {
+            console.log('Face already known, not saving as unknown:', matchResult.name);
+            return;
+        }
+        
+        // Check if this face is similar to any face we've already detected in this session
+        // to prevent storing the same person multiple times
+        const isSimilarToDetected = isAlreadyDetected(faceDescriptor);
+        
+        if (isSimilarToDetected) {
+            console.log('Similar face already detected in this session, not saving duplicate');
+            return;
+        }
+        
+        // Add to detected faces array to prevent future duplicates
+        detectedFaces.push({
+            descriptor: faceDescriptor,
+            timestamp: new Date().toISOString()
         });
         
-        await peerConnection.setLocalDescription(offer);
+        // Create a new canvas with just the face
+        const faceCanvas = document.createElement('canvas');
+        faceCanvas.width = faceBox.width;
+        faceCanvas.height = faceBox.height;
+        const faceCtx = faceCanvas.getContext('2d');
         
-        // Send offer to server
-        const response = await fetch('/webrtc/offer', {
+        // Draw just the face region to the new canvas
+        faceCtx.drawImage(
+            sourceCanvas, 
+            faceBox.x, faceBox.y, faceBox.width, faceBox.height,
+            0, 0, faceBox.width, faceBox.height
+        );
+        
+        // Convert to data URL
+        const dataURL = faceCanvas.toDataURL('image/png');
+        
+        // Generate timestamp for filename
+        const now = new Date();
+        const timestamp = now.toISOString().replace(/[:.]/g, '-');
+        
+        // Add flag if multiple faces were detected
+        const multiFlag = simultaneousFacesDetected ? 'multi-' : '';
+        
+        // Send to server for saving
+        const response = await fetch('/api/save-unknown-face', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                sdp: peerConnection.localDescription.sdp,
-                type: peerConnection.localDescription.type
+                imageData: dataURL,
+                filename: `unknown-face-${multiFlag}${timestamp}.png`
             })
         });
         
-        if (!response.ok) {
-            throw new Error(`Server returned ${response.status}`);
+        // Check if the response was successful
+        if (response.ok) {
+            const data = await response.json();
+            console.log('Unknown face saved successfully:', data.message || 'Success');
+        } else {
+            const errorData = await response.json().catch(() => null);
+            throw new Error(errorData?.detail || `Server error: ${response.status} ${response.statusText}`);
         }
-        
-        const serverAnswer = await response.json();
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(serverAnswer));
-        
-        console.log('✅ WebRTC connection established');
-        cameraInitialized = true;
-        reconnectAttempts = 0;
-        
     } catch (error) {
-        console.error('❌ WebRTC setup error:', error);
-        
-        // Increment reconnect attempts
-        reconnectAttempts++;
-        
-        // Exponential backoff for reconnection
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && recognitionActive) {
-            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
-            console.log(`🔄 WebRTC reconnecting in ${delay/1000} seconds... (Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-            
-            setTimeout(() => {
-                if (recognitionActive) {
-                    initializeWebRTC();
-                }
-            }, delay);
-        } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            showToast('Failed to establish video stream after multiple attempts', 'error');
-        }
+        console.error('Error saving unknown face:', error);
     }
 }
 
-// Function to send ICE candidate to server
-async function sendIceCandidate(candidate) {
+// Helper function to determine if a face is already detected in this session
+function isAlreadyDetected(newFaceDescriptor, similarityThreshold = 0.7) {
+    if (!detectedFaces.length) return false;
+    
+    for (const storedFace of detectedFaces) {
+        // Calculate similarity between face descriptors
+        const distance = faceapi.euclideanDistance(newFaceDescriptor, storedFace.descriptor);
+        
+        // Lower distance means higher similarity
+        if (distance < similarityThreshold) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Function to clear detected faces (can be called when starting a new session)
+function clearDetectedFaces() {
+    detectedFaces = [];
+    simultaneousFacesDetected = false;
+    console.log('Detected faces cache cleared');
+}
+
+// This function should be called from your main face detection loop
+async function processDetectedFaces(video, canvas, detections) {
+    // Assume detections is the array of detected faces from faceapi
+    
+    if (detections && detections.length > 0) {
+        // Process each detected face
+        for (const detection of detections) {
+            const faceBox = detection.detection.box;
+            // Pass all detections to saveUnknownFace to enable multi-face handling
+            await saveUnknownFace(canvas, faceBox, detections);
+        }
+    }
+    
+    // Reset multi-face flag after processing is complete if needed
+    // You might want different logic here based on your application needs
+    // simultaneousFacesDetected = false;
+}
+        // Find the best match for a face descriptor
+// Find the best match for a face descriptor
+function findBestMatch(faceDescriptor) {
+    let bestMatch = { isMatch: false, name: 'Unknown', confidence: 0 };
+    const HIGH_CONFIDENCE_THRESHOLD = 0.70; // Slightly higher for better accuracy
+    const MEDIUM_CONFIDENCE_THRESHOLD = 0.55; 
+    
+    if (!knownFaces || knownFaces.length === 0) {
+        console.warn('No known faces available for matching');
+        return bestMatch;
+    }
+    
     try {
-        await fetch('/webrtc/ice_candidate', {
+        // Create array to collect all match results
+        let allMatches = [];
+        
+        for (const knownFace of knownFaces) {
+            if (!knownFace.descriptor) {
+                console.warn(`Missing descriptor for known face: ${knownFace.name}`);
+                continue;
+            }
+            
+            // Ensure descriptors are Float32Array type for consistent comparison
+            const faceDescriptorArray = new Float32Array(faceDescriptor);
+            
+            // Calculate face similarity using Euclidean distance
+            const distance = faceapi.euclideanDistance(
+                faceDescriptorArray,
+                new Float32Array(knownFace.descriptor)
+            );
+            
+            // Convert distance to similarity score (0-1)
+            const confidence = 1 - distance;
+            
+            // Add to all matches for diagnostics
+            allMatches.push({
+                name: knownFace.name,
+                confidence: confidence
+            });
+            
+            // Check against primary threshold
+            if (confidence > HIGH_CONFIDENCE_THRESHOLD && confidence > bestMatch.confidence) {
+                bestMatch = {
+                    isMatch: true,
+                    name: knownFace.name,
+                    confidence: confidence
+                };
+            }
+        }
+        
+        // If no match found with high confidence, try medium confidence
+        if (!bestMatch.isMatch) {
+            for (const match of allMatches) {
+                if (match.confidence > MEDIUM_CONFIDENCE_THRESHOLD && 
+                    match.confidence > bestMatch.confidence) {
+                    bestMatch = {
+                        isMatch: true,
+                        name: match.name,
+                        confidence: match.confidence,
+                        isLowerConfidence: true
+                    };
+                }
+            }
+        }
+        
+        return bestMatch;
+    } catch (error) {
+        console.error('Error in face matching:', error);
+        return bestMatch;
+    }
+}
+
+function debugKnownFaces() {
+    console.log(`Total known faces: ${knownFaces.length}`);
+    knownFaces.forEach((face, index) => {
+        console.log(`Face #${index}: ${face.name}`);
+        console.log(`Has valid descriptor: ${face.descriptor && face.descriptor.length > 0}`);
+        // Log the first few values of the descriptor to check if it looks valid
+        if (face.descriptor) {
+            console.log(`Descriptor sample: ${face.descriptor.slice(0, 5).join(', ')}`);
+        }
+    });
+}
+        
+// Helper function for rounded rectangles
+function roundedRect(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + width, y, x + width, y + height, radius);
+    ctx.arcTo(x + width, y + height, x, y + height, radius);
+    ctx.arcTo(x, y + height, x, y, radius);
+    ctx.arcTo(x, y, x + width, y, radius);
+    ctx.closePath();
+    ctx.fill();
+}
+
+// And for the path version
+function roundedRectPath(ctx, x, y, width, height, radius) {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.arcTo(x + width, y, x + width, y + height, radius);
+    ctx.arcTo(x + width, y + height, x, y + height, radius);
+    ctx.arcTo(x, y + height, x, y, radius);
+    ctx.arcTo(x, y, x + width, y, radius);
+}
+// Log attendance for a recognized employee
+// Improved attendance logging function
+async function logAttendance(employeeName) {
+    try {
+        // Debounce to prevent multiple submissions within 3 seconds
+        if (window.lastAttendanceLog && ((new Date()) - window.lastAttendanceLog) < 3000) {
+            console.log("Attendance logging throttled, please wait a few seconds");
+            return null;
+        }
+        
+        // Record this attempt
+        window.lastAttendanceLog = new Date();
+        
+        const today = new Date();
+        const currentTime = today.toLocaleTimeString();
+        
+        console.log(`Attempting to log attendance for ${employeeName} at ${currentTime}`);
+        
+        // Let the server determine if this is an entry or exit
+        const attendanceRecord = {
+            name: employeeName,
+            timestamp: currentTime,
+            action: "auto"  // Let server decide based on today's records
+        };
+        
+        // Send to backend
+        const response = await fetch('/api/log-attendance', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(candidate)
+            body: JSON.stringify(attendanceRecord)
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Update local tracking data if needed
+            if (!attendanceData[employeeName]) {
+                attendanceData[employeeName] = { name: employeeName };
+            }
+            
+            // Play appropriate greeting based on entry/exit
+            if (result.action === "entry") {
+                attendanceData[employeeName].entryTime = currentTime;
+                speakGreeting(employeeName, true);
+                console.log(`Logged entry for ${employeeName} at ${currentTime}`);
+                
+                // Update UI or notification
+                showNotification(`Entry recorded for ${employeeName}`, "success");
+            } else if (result.action === "exit") {
+                attendanceData[employeeName].exitTime = currentTime;
+                speakGreeting(employeeName, false);
+                console.log(`Logged exit for ${employeeName} at ${currentTime}`);
+                
+                // Update UI or notification
+                showNotification(`Exit recorded for ${employeeName}`, "success");
+            }
+            
+            // Update attendance display if needed
+            updateTodayAttendance();
+        } else {
+            console.log("Attendance log result:", result.message);
+            // Only show an alert for important messages, not for routine "already logged" messages
+            if (!result.message.includes("already has complete attendance")) {
+                showNotification(result.message, "info");
+            }
+        }
+        
+        return result.success;
+    } catch (error) {
+        console.error('Error logging attendance:', error);
+        showNotification("Error logging attendance. Please try again.", "error");
+        return false;
+    }
+}
+
+// Improved notification function (add this to your code)
+function showNotification(message, type = "info") {
+    // You can implement this based on your UI framework
+    // Example implementation:
+    const notificationArea = document.getElementById('notification-area') || document.createElement('div');
+    
+    if (!document.getElementById('notification-area')) {
+        notificationArea.id = 'notification-area';
+        notificationArea.style.position = 'fixed';
+        notificationArea.style.top = '20px';
+        notificationArea.style.right = '20px';
+        notificationArea.style.zIndex = '1000';
+        document.body.appendChild(notificationArea);
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.style.padding = '10px 20px';
+    notification.style.marginBottom = '10px';
+    notification.style.borderRadius = '4px';
+    notification.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+    notification.style.backgroundColor = type === 'success' ? '#4CAF50' : 
+                                         type === 'error' ? '#F44336' : 
+                                         type === 'warning' ? '#FF9800' : '#2196F3';
+    notification.style.color = 'white';
+    notification.textContent = message;
+    
+    notificationArea.appendChild(notification);
+    
+    // Remove notification after 5 seconds
+    setTimeout(() => {
+        notification.style.opacity = '0';
+        notification.style.transition = 'opacity 0.5s';
+        setTimeout(() => notification.remove(), 500);
+    }, 5000);
+}
+
+// Improved speak greeting function with better voice synthesis
+function speakGreeting(name, isEntry) {
+    // Cancel any previous speech that might still be playing
+    if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+    }
+    
+    let greeting;
+    const currentHour = new Date().getHours();
+    let timeOfDay = "day";
+    
+    // Determine time of day for more natural greetings
+    if (currentHour < 12) {
+        timeOfDay = "morning";
+    } else if (currentHour < 17) {
+        timeOfDay = "afternoon";
+    } else {
+        timeOfDay = "evening";
+    }
+    
+    if (isEntry) {
+        // More professional and varied entry greetings
+        const greetings = [
+            `Good ${timeOfDay}, ${name}. Your attendance has been recorded.`,
+            `Welcome, ${name}. Your entry time has been logged.`,
+            `Hello ${name}. You've been checked in successfully.`,
+            `Good ${timeOfDay}, ${name}. Your arrival has been noted in the system.`
+        ];
+        greeting = greetings[Math.floor(Math.random() * greetings.length)];
+    } else {
+        // More professional and varied exit greetings
+        const greetings = [
+            `Goodbye, ${name}. Your exit has been recorded.`,
+            `Thank you for your work today, ${name}. Your exit time has been logged.`,
+            `Have a good ${timeOfDay}, ${name}. You've been checked out successfully.`,
+            `Your departure has been noted, ${name}. See you next time.`
+        ];
+        greeting = greetings[Math.floor(Math.random() * greetings.length)];
+    }
+    
+    console.log(`Speaking greeting: ${greeting}`);
+    
+    // Play appropriate sound effect if available
+    const soundFile = isEntry ? 'entry-sound.mp3' : 'exit-sound.mp3';
+    playSound(soundFile);
+    
+    // Improved speech synthesis with better settings
+    if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(greeting);
+        
+        // Adjust voice settings for better quality
+        utterance.rate = 0.9;  // Slightly slower than default
+        utterance.pitch = 1.0;  // Normal pitch
+        utterance.volume = 1.0;  // Full volume
+        
+        // Try to use a higher quality voice if available
+        const voices = window.speechSynthesis.getVoices();
+        const preferredVoices = voices.filter(v => 
+            v.name.includes('Google') || 
+            v.name.includes('Microsoft') || 
+            v.name.includes('Premium')
+        );
+        
+        if (preferredVoices.length > 0) {
+            utterance.voice = preferredVoices[0];
+        }
+        
+        // Wait a moment before speaking to ensure any previous speech is fully stopped
+        setTimeout(() => {
+            window.speechSynthesis.speak(utterance);
+        }, 300);
+    }
+}
+
+// Helper function to play sound effects
+function playSound(soundFile) {
+    try {
+        const audio = new Audio(`/sounds/${soundFile}`);
+        audio.volume = 0.5;  // Set volume to 50%
+        audio.play().catch(err => {
+            console.log('Could not play sound effect:', err);
         });
     } catch (error) {
-        console.error('Error sending ICE candidate:', error);
+        console.log('Error playing sound effect:', error);
     }
 }
-
-// Function to handle ICE candidates from server
-async function handleRemoteIceCandidate(candidate) {
-    if (peerConnection && peerConnection.remoteDescription) {
-        try {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (error) {
-            console.error('Error adding ICE candidate:', error);
-        }
-    }
-}
-
-// Function to close WebRTC connection
-async function closeWebRTCConnection() {
-    if (peerConnection) {
-        // Close existing tracks
-        peerConnection.getSenders().forEach(sender => {
-            if (sender.track) {
-                sender.track.stop();
-            }
-        });
+// Improved function to get registered employees count
+async function updateTotalEmployees() {
+    try {
+        // Method 1: Try to get count from known_faces.json
+        const response = await fetch('/api/employee-count');
         
-        // Close connection
-        peerConnection.close();
-        peerConnection = null;
-    }
-    
-    // Also clean up video element
-    const videoElement = document.getElementById('videoFeed');
-    if (videoElement && videoElement.srcObject) {
-        const tracks = videoElement.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
-        videoElement.srcObject = null;
-    }
-}
-
-// WebRTC Ice Candidate handler - set up event source for receiving ICE candidates from server
-function setupIceCandidateListener() {
-    const iceEventSource = new EventSource('/webrtc/ice_updates');
-    
-    iceEventSource.addEventListener('message', async (event) => {
-        try {
-            const candidate = JSON.parse(event.data);
-            await handleRemoteIceCandidate(candidate);
-        } catch (error) {
-            console.error('Error processing ICE candidate:', error);
+        if (response.ok) {
+            const data = await response.json();
+            totalEmployeesElement.textContent = data.count;
+            return;
         }
-    });
-    
-    iceEventSource.addEventListener('error', (error) => {
-        console.error('ICE updates EventSource error:', error);
-        iceEventSource.close();
         
-        // Retry connection after delay
-        setTimeout(() => {
-            if (recognitionActive && peerConnection) {
-                setupIceCandidateListener();
-            }
-        }, 5000);
-    });
-    
-    return iceEventSource;
+        // Method 2: Fallback to counting loaded face encodings
+        if (knownFaces && knownFaces.length > 0) {
+            totalEmployeesElement.textContent = knownFaces.length;
+            return;
+        }
+        
+        // Method 3: Last resort - check dataset folders
+        const folderResponse = await fetch('/api/dataset-folders');
+        if (folderResponse.ok) {
+            const folderData = await folderResponse.json();
+            totalEmployeesElement.textContent = folderData.count;
+            return;
+        }
+        
+        console.error('Failed to retrieve employee count from any source');
+    } catch (error) {
+        console.error('Error updating total employees:', error);
+    }
 }
 
-function checkSystemStatus() {
-    fetch("/check_status")
-        .then(response => {
-            if (!response.ok) throw new Error(`Server returned ${response.status}`);
-            return response.json();
-        })
-        .then(data => {
-            console.log("System status:", data);
-            recognitionActive = data.recognition_active;
-            updateStatusDisplay();
-            
-            // Initialize WebRTC if recognition is active
-            if (recognitionActive && (!peerConnection || peerConnection.connectionState === 'closed')) {
-                initializeWebRTC();
-            }
-        })
-        .catch(error => {
-            console.error("Status check failed:", error);
-            showToast("Connection error. Retrying...", "error");
-            setTimeout(checkSystemStatus, 3000);
-        });
-}
-
-function loadSystemStats() {
-    showToast('Loading system data...', 'info');
-    
-    // Use Promise.all to handle multiple fetch requests
-    Promise.all([
-        fetch('/get_known_users')
-            .then(response => {
-                if (!response.ok) throw new Error(`Server returned ${response.status} for get_known_users`);
-                return response.json();
-            })
-            .catch(error => {
-                console.warn('Failed to load known users:', error);
-                return { success: false, error: error.message };
-            }),
-        fetch('/get_today_attendance')
-            .then(response => {
-                if (!response.ok) throw new Error(`Server returned ${response.status} for get_today_attendance`);
-                return response.json();
-            })
-            .catch(error => {
-                console.warn('Failed to load attendance:', error);
-                return { success: false, error: error.message };
-            })
-    ])
-    .then(([usersResponse, attendanceResponse]) => {
-        // Handle users data
-        if (usersResponse.success) {
-            document.getElementById('totalEmployees').textContent = usersResponse.users.length;
+// Simplified function to get today's attendance count
+async function updateTodayAttendance() {
+    try {
+        // Get today's date in format YYYY-MM-DD
+        const today = new Date();
+        const dateString = today.toISOString().split('T')[0];
+        
+        // Request attendance data for today from backend
+        const response = await fetch(`/api/today-attendance?date=${dateString}`);
+        
+        if (!response.ok) {
+            throw new Error(`Failed to get attendance data: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        // Update the display with unique attendees count
+        todayAttendanceElement.textContent = data.count || 0;
+        
+        return data.count;
+    } catch (error) {
+        console.error('Error updating today\'s attendance:', error);
+        // Fallback to local data if available
+        if (typeof attendanceData === 'object') {
+            todayAttendanceElement.textContent = Object.keys(attendanceData).length;
         } else {
-            console.warn('Failed to load known users:', usersResponse.error || 'Unknown error');
-            document.getElementById('totalEmployees').textContent = '?';
-        }
-        
-        // Handle attendance data
-        if (attendanceResponse.success) {
-            document.getElementById('todayAttendance').textContent = attendanceResponse.count;
-        } else {
-            console.warn('Failed to load attendance:', attendanceResponse.error || 'Unknown error');
-            document.getElementById('todayAttendance').textContent = '?';
-        }
-        
-        // Show success toast if at least one request succeeded
-        if (usersResponse.success || attendanceResponse.success) {
-            showToast('System data loaded', 'success');
-        } else {
-            showToast('Error loading system data. Will retry shortly.', 'error');
-            setTimeout(loadSystemStats, 5000);
-        }
-    });
-}
-
-function startRecognition() {
-    let startBtn = document.getElementById("startBtn");
-    if (startBtn.disabled) return;
-
-    startBtn.disabled = true;
-    document.getElementById("loadingOverlay").style.display = 'flex';
-    showToast("Starting face recognition...", "info");
-
-    fetch('/start_recognition', { 
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ timestamp: Date.now() }) // Add timestamp to prevent caching
-    })
-    .then(response => {
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        return response.json();
-    })
-    .then(data => {
-        document.getElementById("loadingOverlay").style.display = 'none';
-        if (data.success) {
-            recognitionActive = true;
-            showToast("Face recognition started!", "success");
-            
-            // Update video feed
-            updateVideoElement(true);
-            
-            // Ensure SSE connection is active
-            setupSSEListener();
-            
-            // Initialize WebRTC connection
-            initializeWebRTC();
-        } else {
-            showToast("Recognition failed: " + (data.message || data.status || "Unknown error"), "error");
-        }
-        startBtn.disabled = false;
-    })
-    .catch(error => {
-        document.getElementById("loadingOverlay").style.display = 'none';
-        console.error("Recognition start error:", error);
-        showToast("Server error: " + error.message, "error");
-        startBtn.disabled = false;
-    });
-}
-
-function stopRecognition() {
-    let stopBtn = document.getElementById("stopBtn");
-    if (stopBtn.disabled) return;
-    
-    stopBtn.disabled = true;
-    showToast('⏹ Stopping recognition...', 'info');
-
-    fetch('/stop_recognition', { 
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ timestamp: Date.now() }) // Add timestamp to prevent caching
-    })
-    .then(response => {
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        return response.json();
-    })
-    .then(data => {
-        if (data.success) {
-            showToast('✅ Recognition stopped successfully!', 'success');
-            recognitionActive = false;
-            
-            // Replace video with placeholder
-            updateVideoElement(false);
-            
-            // Close WebRTC connection
-            closeWebRTCConnection();
-        } else {
-            showToast('Error: ' + (data.message || data.status || "Unknown error"), 'error');
-        }
-        stopBtn.disabled = false;
-    })
-    .catch(error => {
-        console.error('❌ Error stopping recognition:', error);
-        showToast('Error: ' + error.message, 'error');
-        stopBtn.disabled = false;
-    });
-}
-
-// Improved event listener for recognized faces using Server-Sent Events
-function setupSSEListener() {
-    // Close existing connection if any
-    if (window.facesEventSource) {
-        window.facesEventSource.close();
-        window.facesEventSource = null;
-    }
-
-    // Create new EventSource with a unique timestamp to prevent caching
-    window.facesEventSource = new EventSource("/recognized_faces?t=" + Date.now());
-    
-    window.facesEventSource.addEventListener('message', (event) => {
-        try {
-            const data = JSON.parse(event.data);
-            if (data.name) {
-                document.getElementById("lastRecognition").textContent = new Date().toLocaleTimeString();
-                speakMessage(`Hi ${data.name}`);
-                showToast(`Recognized: ${data.name}`, "success");
-                if (data.attendance_count !== undefined) {
-                    document.getElementById("todayAttendance").textContent = data.attendance_count;
-                }
-            }
-        } catch (error) {
-            // Empty or invalid data, ignore
-            console.debug("Invalid SSE data received", error);
-        }
-    });
-
-    window.facesEventSource.addEventListener('error', (error) => {
-        console.error("SSE error:", error);
-        if (window.facesEventSource) {
-            window.facesEventSource.close();
-            window.facesEventSource = null;
-        }
-        
-        // Retry with increasing delay
-        const retryDelay = Math.min(5000 * (reconnectAttempts + 1), 30000);
-        setTimeout(() => {
-            if (document.visibilityState === 'visible') {
-                setupSSEListener();
-            }
-        }, retryDelay);
-    });
-    
-    window.facesEventSource.addEventListener('open', () => {
-        console.log("SSE connection established");
-        reconnectAttempts = 0; // Reset on successful connection
-    });
-}
-
-// Implement a robust heartbeat mechanism with health check
-function sendHeartbeat() {
-    if (document.visibilityState !== 'visible') {
-        return; // Skip heartbeat if page is not visible
-    }
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-    
-    fetch('/ping', { 
-        signal: controller.signal,
-        headers: {
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
-    })
-    .then(response => {
-        clearTimeout(timeoutId);
-        if (!response.ok) throw new Error(`Server returned ${response.status}`);
-        return response.json();
-    })
-    .then(data => {
-        console.log('Heartbeat successful');
-        
-        // Check connection health
-        checkConnectionHealth();
-    })
-    .catch(error => {
-        if (error.name === 'AbortError') {
-            console.warn('Server heartbeat timed out');
-        } else {
-            console.warn('Server heartbeat failed:', error);
-        }
-        
-        // Attempt to restore connections
-        checkConnectionHealth();
-    });
-}
-
-// Check and restore all connections if needed
-function checkConnectionHealth() {
-    // Check SSE connection
-    if (!window.facesEventSource || window.facesEventSource.readyState === 2) {
-        console.log('Restoring SSE connection');
-        setupSSEListener();
-    }
-    
-    // Check WebRTC connection
-    if (recognitionActive && (!peerConnection || peerConnection.connectionState === 'closed' || 
-        peerConnection.connectionState === 'failed' || peerConnection.iceConnectionState === 'disconnected')) {
-        console.log('Restoring WebRTC connection');
-        initializeWebRTC();
-    }
-    
-    // Refresh system status if needed
-    if (document.visibilityState === 'visible') {
-        checkSystemStatus();
-    }
-}
-
-// Send heartbeat every 30 seconds
-const heartbeatInterval = setInterval(sendHeartbeat, 30000);
-
-// Add window event listeners to handle page visibility changes
-document.addEventListener('visibilitychange', function() {
-    if (document.visibilityState === 'visible') {
-        console.log('Page became visible - refreshing connection');
-        // Page is visible again, refresh data and connections
-        checkSystemStatus();
-        loadSystemStats();
-        checkConnectionHealth();
-    } else {
-        // Page is hidden, close video connection to save resources
-        if (peerConnection && recognitionActive) {
-            // Don't fully close, just pause media tracks
-            peerConnection.getSenders().forEach(sender => {
-                if (sender.track) {
-                    sender.track.enabled = false;
-                }
-            });
+            todayAttendanceElement.textContent = "0";
         }
     }
+}
+// Improved comprehensive system metrics update function
+function updateSystemMetrics() {
+    // Update system uptime
+    const currentTime = new Date();
+    const uptimeMs = currentTime - systemStartTime;
+    
+    // Calculate hours, minutes for better display
+    const uptimeHours = Math.floor(uptimeMs / (1000 * 60 * 60));
+    const uptimeMinutes = Math.floor((uptimeMs % (1000 * 60 * 60)) / (1000 * 60));
+    
+    // Format as "Xh Ym" for better readability
+    systemUptimeElement.textContent = uptimeHours > 0 
+        ? `${uptimeHours}h ${uptimeMinutes}m` 
+        : `${uptimeMinutes}m`;
+    
+    // Update employee count and attendance metrics
+    updateTotalEmployees();
+    updateTodayAttendance();
+    
+    // Log update for monitoring
+    console.log(`System metrics updated at ${currentTime.toLocaleTimeString()}`);
+}
+
+// Initialize metrics update when document loads
+document.addEventListener('DOMContentLoaded', () => {
+    // Set initial system start time
+    systemStartTime = new Date();
+    
+    // Perform initial update
+    updateSystemMetrics();
+    
+    // Schedule regular updates every minute
+    setInterval(updateSystemMetrics, 60000);
+    
+    console.log('System metrics monitoring initialized');
 });
-
-// Improved toast notification system with queue
-const toastQueue = [];
-let toastActive = false;
-
-function showToast(message, type = 'success') {
-    // Add to queue
-    toastQueue.push({ message, type });
-    
-    // Process queue if not already processing
-    if (!toastActive) {
-        processToastQueue();
-    }
-}
-
-function processToastQueue() {
-    if (toastQueue.length === 0) {
-        toastActive = false;
-        return;
-    }
-    
-    toastActive = true;
-    const { message, type } = toastQueue.shift();
-    const toast = document.getElementById('toast');
-    const toastMessage = document.getElementById('toastMessage');
-    
-    // Set message
-    toastMessage.textContent = message;
-    
-    // Set type class
-    toast.className = 'toast';
-    toast.classList.add(type);
-    toast.classList.add('show');
-    
-    // Auto hide after 3 seconds
-    setTimeout(() => {
-        toast.classList.remove('show');
-    }, 3000);
-}
-    </script>
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toastMessage');
+            
+            // Set message
+            toastMessage.textContent = message;
+            
+            // Set type class
+            toast.className = 'toast';
+            toast.classList.add(type);
+            toast.classList.add('show');
+            
+            // Auto hide after 3 seconds
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+            </script>
 </body>
 </html>
