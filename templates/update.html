@@ -655,12 +655,12 @@
     </footer>
     
     <script>
- // Global variables
+// Global variables
 let video = document.getElementById('videoFeed');
 let captureCount = 0;
 const TOTAL_CAPTURES = 10;
 let captureInProgress = false;
-let faceDetectionModel;
+let faceDetectionModel = false;
 let employeeName = '';
 let capturedImages = [];
 let detectedFace = null;
@@ -680,6 +680,7 @@ const employeeNameInput = document.getElementById('employeeName');
 const startCaptureBtn = document.getElementById('startCaptureBtn');
 const takeSingleImageBtn = document.getElementById('takeSingleImageBtn');
 const employeeDetailsElement = document.getElementById('employeeDetails');
+const videoPlaceholder = document.getElementById('videoPlaceholder');
 
 // Set up the current step in the process
 function updateStepUI(step) {
@@ -770,6 +771,8 @@ async function initCamera() {
         });
         
         video.srcObject = stream;
+        videoPlaceholder.style.display = 'none';
+        video.style.display = 'block';
         
         // Wait for video to be ready
         await new Promise(resolve => {
@@ -786,29 +789,42 @@ async function initCamera() {
     } catch (error) {
         console.error('Error initializing camera:', error);
         loadingOverlay.style.display = 'none';
-        showToast('Failed to access camera', 'error');
-        backToDetails();
+        showToast('Failed to access camera. Please check permissions.', 'error');
+        
+        // Show placeholder if camera fails
+        videoPlaceholder.style.display = 'block';
+        video.style.display = 'none';
+        
+        // Don't immediately go back to details to allow user to try again
+        feedbackMessage.textContent = "Camera access failed. Check permissions and try again.";
     }
 }
 
-// Load face detection model
+// Load face detection model with proper error handling
 async function loadFaceDetectionModel() {
     if (faceDetectionModel) return; // Already loaded
     
     try {
-        // Using face-api.js (this would need to be included in your HTML)
+        // Check if face-api.js is available
+        if (typeof faceapi === 'undefined') {
+            throw new Error('Face API library not loaded');
+        }
+        
+        // Using face-api.js
         await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
         await faceapi.nets.faceLandmark68Net.loadFromUri('/models');
         
         faceDetectionModel = true;
     } catch (error) {
         console.error('Error loading face detection model:', error);
-        showToast('Failed to load face detection models', 'error');
+        showToast('Failed to load face detection models. Using fallback mode.', 'warning');
+        
+        // Set flag that we'll use fallback detection
         faceDetectionModel = false;
-        throw error;
     }
 }
-// Enhanced continuous face detection
+
+// Enhanced continuous face detection with fallback
 function startFaceDetection() {
     // Object to track face stability over time
     let faceStabilityCounter = 0;
@@ -829,192 +845,226 @@ function startFaceDetection() {
             const context = canvas.getContext('2d');
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Detect faces
-            const detections = await faceapi.detectAllFaces(canvas);
-            
-            if (detections.length === 0) {
-                feedbackMessage.textContent = "No face detected. Please position your face in the camera.";
-                detectedFace = null;
-                faceStabilityCounter = 0;
-                return;
-            }
-            
-            if (detections.length > 1) {
-                feedbackMessage.textContent = "Multiple faces detected. Please ensure only the employee is in frame.";
-                detectedFace = null;
-                faceStabilityCounter = 0;
-                return;
-            }
-            
-            // Single face detected
-            const detection = detections[0];
-            const box = detection.box;
-            
-            // Check if face is large enough (close enough to camera)
-            const minFaceSize = canvas.width * 0.15; // Face should be at least 15% of frame width
-            
-            if (box.width < minFaceSize) {
-                feedbackMessage.textContent = "Please move closer to the camera.";
-                detectedFace = null;
-                faceStabilityCounter = 0;
-                return;
-            }
-            
-            // Check if face is centered enough
-            const centerX = canvas.width / 2;
-            const centerY = canvas.height / 2;
-            const faceX = box.x + (box.width / 2);
-            const faceY = box.y + (box.height / 2);
-            
-            const maxOffset = canvas.width * 0.15; // Allow 15% offset from center
-            
-            if (Math.abs(centerX - faceX) > maxOffset || Math.abs(centerY - faceY) > maxOffset) {
-                feedbackMessage.textContent = "Please center your face in the frame.";
-                detectedFace = null;
-                faceStabilityCounter = 0;
-                return;
-            }
-            
-            // Check face stability
-            if (prevFacePosition) {
-                const movementX = Math.abs(prevFacePosition.x - faceX);
-                const movementY = Math.abs(prevFacePosition.y - faceY);
-                const movementThreshold = canvas.width * 0.01; // 1% movement threshold
+            // If face-api is available, use it
+            if (faceDetectionModel && typeof faceapi !== 'undefined') {
+                // Detect faces
+                const detections = await faceapi.detectAllFaces(canvas);
                 
-                if (movementX > movementThreshold || movementY > movementThreshold) {
-                    // Face moved too much
+                if (detections.length === 0) {
+                    feedbackMessage.textContent = "No face detected. Please position your face in the camera.";
+                    detectedFace = null;
                     faceStabilityCounter = 0;
-                    feedbackMessage.textContent = "Please hold still for a clear capture.";
-                } else {
-                    // Face is stable
-                    faceStabilityCounter++;
+                    return;
                 }
-            }
-            
-            // Update previous face position
-            prevFacePosition = { x: faceX, y: faceY };
-            
-            // Face position is good, now check lighting
-            const brightness = calculateBrightness(context, box);
-            if (brightness < 50) {
-                feedbackMessage.textContent = "Poor lighting. Please move to a better lit area.";
-                detectedFace = null;
-                return;
-            }
-            
-            // Only set face as detected if it's stable enough
-            if (faceStabilityCounter >= STABILITY_THRESHOLD) {
-                // Face is good for capture!
-                feedbackMessage.textContent = "Face detected properly. Ready for capture!";
-                detectedFace = detection;
                 
-                // Temporarily visualize the face box with quality indicator
-                drawFaceBox(box, true); // true indicates good quality
+                if (detections.length > 1) {
+                    feedbackMessage.textContent = "Multiple faces detected. Please ensure only the employee is in frame.";
+                    detectedFace = null;
+                    faceStabilityCounter = 0;
+                    return;
+                }
+                
+                // Single face detected
+                const detection = detections[0];
+                const box = detection.box;
+                
+                // Check if face is large enough (close enough to camera)
+                const minFaceSize = canvas.width * 0.15; // Face should be at least 15% of frame width
+                
+                if (box.width < minFaceSize) {
+                    feedbackMessage.textContent = "Please move closer to the camera.";
+                    detectedFace = null;
+                    faceStabilityCounter = 0;
+                    return;
+                }
+                
+                // Check if face is centered enough
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                const faceX = box.x + (box.width / 2);
+                const faceY = box.y + (box.height / 2);
+                
+                const maxOffset = canvas.width * 0.15; // Allow 15% offset from center
+                
+                if (Math.abs(centerX - faceX) > maxOffset || Math.abs(centerY - faceY) > maxOffset) {
+                    feedbackMessage.textContent = "Please center your face in the frame.";
+                    detectedFace = null;
+                    faceStabilityCounter = 0;
+                    return;
+                }
+                
+                // Check face stability
+                if (prevFacePosition) {
+                    const movementX = Math.abs(prevFacePosition.x - faceX);
+                    const movementY = Math.abs(prevFacePosition.y - faceY);
+                    const movementThreshold = canvas.width * 0.01; // 1% movement threshold
+                    
+                    if (movementX > movementThreshold || movementY > movementThreshold) {
+                        // Face moved too much
+                        faceStabilityCounter = 0;
+                        feedbackMessage.textContent = "Please hold still for a clear capture.";
+                    } else {
+                        // Face is stable
+                        faceStabilityCounter++;
+                    }
+                }
+                
+                // Update previous face position
+                prevFacePosition = { x: faceX, y: faceY };
+                
+                // Face position is good, now check lighting
+                const brightness = calculateBrightness(context, box);
+                if (brightness < 50) {
+                    feedbackMessage.textContent = "Poor lighting. Please move to a better lit area.";
+                    detectedFace = null;
+                    return;
+                }
+                
+                // Only set face as detected if it's stable enough
+                if (faceStabilityCounter >= STABILITY_THRESHOLD) {
+                    // Face is good for capture!
+                    feedbackMessage.textContent = "Face detected properly. Ready for capture!";
+                    detectedFace = detection;
+                    
+                    // Temporarily visualize the face box with quality indicator
+                    drawFaceBox(box, true); // true indicates good quality
+                } else {
+                    feedbackMessage.textContent = "Stabilizing... Please hold still.";
+                    drawFaceBox(box, false); // false indicates still stabilizing
+                }
             } else {
-                feedbackMessage.textContent = "Stabilizing... Please hold still.";
-                drawFaceBox(box, false); // false indicates still stabilizing
+                // FALLBACK MODE: Simple detection if face-api is not available
+                // In fallback mode, we'll just assume there's a face and let the user manually capture
+                feedbackMessage.textContent = "Face detection running in basic mode. Center your face and hold still.";
+                
+                // Create a dummy "detection" for the center of the frame
+                const centerBox = {
+                    x: canvas.width * 0.25,
+                    y: canvas.height * 0.15,
+                    width: canvas.width * 0.5,
+                    height: canvas.height * 0.7
+                };
+                
+                detectedFace = { box: centerBox };
+                drawFaceBox(centerBox, true);
             }
             
         } catch (error) {
             console.error('Error in face detection:', error);
+            // If there's an error, switch to fallback mode
+            faceDetectionModel = false;
+            feedbackMessage.textContent = "Face detection is running in basic mode due to an error.";
         }
     }, 300);
 }
 
 // Helper function to calculate brightness in a region
 function calculateBrightness(context, box) {
-    const imageData = context.getImageData(box.x, box.y, box.width, box.height);
-    const data = imageData.data;
-    let brightness = 0;
-    
-    // Sample every 4th pixel for performance
-    for (let i = 0; i < data.length; i += 16) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
+    try {
+        const imageData = context.getImageData(box.x, box.y, box.width, box.height);
+        const data = imageData.data;
+        let brightness = 0;
         
-        // Calculate relative luminance
-        brightness += (0.299 * r + 0.587 * g + 0.114 * b);
-    }
-    
-    return brightness / (data.length / 16); // Average brightness
-}
-
-// Enhanced face box drawing with quality indicator
-function drawFaceBox(box, isGoodQuality) {
-    // Create a temporary overlay canvas
-    const overlay = document.createElement('canvas');
-    // Match overlay dimensions to video display dimensions
-    overlay.width = video.videoWidth;
-    overlay.height = video.videoHeight;
-    overlay.style.position = 'absolute';
-    overlay.style.top = '0';
-    overlay.style.left = '0';
-    overlay.style.width = '100%';
-    overlay.style.height = '100%';
-    overlay.style.objectFit = 'cover';
-    
-    const ctx = overlay.getContext('2d');
-    
-    // Calculate scaling factors between canvas and display
-    const scaleX = overlay.width / canvas.width;
-    const scaleY = overlay.height / canvas.height;
-    
-    // Scale the box coordinates
-    const scaledBox = {
-        x: box.x * scaleX,
-        y: box.y * scaleY,
-        width: box.width * scaleX,
-        height: box.height * scaleY
-    };
-    
-    // Draw the box with quality-based styling
-    ctx.lineWidth = 4;
-    
-    if (isGoodQuality) {
-        // Green for good quality
-        ctx.strokeStyle = 'rgba(46, 204, 113, 1)';
-        
-        // Add checkmark icon for good quality
-        ctx.fillStyle = 'rgba(46, 204, 113, 1)';
-        ctx.beginPath();
-        const checkSize = scaledBox.width * 0.1;
-        const checkX = scaledBox.x + scaledBox.width + 10;
-        const checkY = scaledBox.y - 10;
-        ctx.arc(checkX, checkY, checkSize, 0, 2 * Math.PI);
-        ctx.fill();
-        
-        // Draw checkmark
-        ctx.strokeStyle = 'white';
-        ctx.beginPath();
-        ctx.moveTo(checkX - checkSize/2, checkY);
-        ctx.lineTo(checkX - checkSize/5, checkY + checkSize/2);
-        ctx.lineTo(checkX + checkSize/2, checkY - checkSize/3);
-        ctx.stroke();
-    } else {
-        // Yellow for still stabilizing
-        ctx.strokeStyle = 'rgba(241, 196, 15, 1)';
-    }
-    
-    ctx.strokeRect(scaledBox.x, scaledBox.y, scaledBox.width, scaledBox.height);
-    
-    // Add additional highlight
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; // White outer glow
-    ctx.lineWidth = 6;
-    ctx.strokeRect(scaledBox.x - 3, scaledBox.y - 3, scaledBox.width + 6, scaledBox.height + 6);
-    
-    // Add to DOM briefly
-    video.parentElement.appendChild(overlay);
-    
-    // Remove after 300ms
-    setTimeout(() => {
-        if (overlay.parentElement) {
-            overlay.parentElement.removeChild(overlay);
+        // Sample every 4th pixel for performance
+        for (let i = 0; i < data.length; i += 16) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            
+            // Calculate relative luminance
+            brightness += (0.299 * r + 0.587 * g + 0.114 * b);
         }
-    }, 300);
+        
+        return brightness / (data.length / 16); // Average brightness
+    } catch (error) {
+        console.error('Error calculating brightness:', error);
+        return 100; // Return a default value if there's an error
+    }
 }
 
-// Improved startCapture function
+// Enhanced face box drawing with quality indicator and proper error handling
+function drawFaceBox(box, isGoodQuality) {
+    try {
+        // Create a temporary overlay canvas
+        const overlay = document.createElement('canvas');
+        
+        // Match overlay dimensions to video display dimensions
+        overlay.width = video.videoWidth || 640;
+        overlay.height = video.videoHeight || 480;
+        overlay.style.position = 'absolute';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100%';
+        overlay.style.height = '100%';
+        overlay.style.objectFit = 'cover';
+        
+        const ctx = overlay.getContext('2d');
+        
+        // Calculate scaling factors between canvas and display
+        const scaleX = overlay.width / canvas.width;
+        const scaleY = overlay.height / canvas.height;
+        
+        // Scale the box coordinates
+        const scaledBox = {
+            x: box.x * scaleX,
+            y: box.y * scaleY,
+            width: box.width * scaleX,
+            height: box.height * scaleY
+        };
+        
+        // Draw the box with quality-based styling
+        ctx.lineWidth = 4;
+        
+        if (isGoodQuality) {
+            // Green for good quality
+            ctx.strokeStyle = 'rgba(46, 204, 113, 1)';
+            
+            // Add checkmark icon for good quality
+            ctx.fillStyle = 'rgba(46, 204, 113, 1)';
+            ctx.beginPath();
+            const checkSize = scaledBox.width * 0.1;
+            const checkX = scaledBox.x + scaledBox.width + 10;
+            const checkY = scaledBox.y - 10;
+            ctx.arc(checkX, checkY, checkSize, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // Draw checkmark
+            ctx.strokeStyle = 'white';
+            ctx.beginPath();
+            ctx.moveTo(checkX - checkSize/2, checkY);
+            ctx.lineTo(checkX - checkSize/5, checkY + checkSize/2);
+            ctx.lineTo(checkX + checkSize/2, checkY - checkSize/3);
+            ctx.stroke();
+        } else {
+            // Yellow for still stabilizing
+            ctx.strokeStyle = 'rgba(241, 196, 15, 1)';
+        }
+        
+        ctx.strokeRect(scaledBox.x, scaledBox.y, scaledBox.width, scaledBox.height);
+        
+        // Add additional highlight
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; // White outer glow
+        ctx.lineWidth = 6;
+        ctx.strokeRect(scaledBox.x - 3, scaledBox.y - 3, scaledBox.width + 6, scaledBox.height + 6);
+        
+        // Add to DOM briefly
+        if (video.parentElement) {
+            video.parentElement.appendChild(overlay);
+            
+            // Remove after 300ms
+            setTimeout(() => {
+                if (overlay.parentElement) {
+                    overlay.parentElement.removeChild(overlay);
+                }
+            }, 300);
+        }
+    } catch (error) {
+        console.error('Error drawing face box:', error);
+        // Silently fail if we can't draw the face box
+    }
+}
+
+// Improved startCapture function with better error handling
 async function startCapture() {
     if (captureInProgress) return;
     
@@ -1072,27 +1122,27 @@ async function startCapture() {
     }, 1500); // Take image every 1.5 seconds
 }
 
-// Take a single image capture
+// Take a single image capture with error handling
 async function takeSingleImage() {
     if (!detectedFace) {
         showToast('No face detected. Please position your face correctly.', 'error');
         return;
     }
     
-    await takeCaptureWithFaceDetection();
+    const success = await takeCaptureWithFaceDetection();
     
-    if (captureCount == TOTAL_CAPTURES) {
+    if (success && captureCount >= TOTAL_CAPTURES) {
         await finalizeCaptureProcess();
     }
 }
 
-// Improved takeCaptureWithFaceDetection function
+// Improved takeCaptureWithFaceDetection function with better error handling
 async function takeCaptureWithFaceDetection() {
-    // Draw current video frame to canvas
-    const context = canvas.getContext('2d');
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
     try {
+        // Draw current video frame to canvas
+        const context = canvas.getContext('2d');
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        
         if (!detectedFace) {
             showToast('No face detected. Please position your face correctly.', 'error');
             return false;
@@ -1104,7 +1154,13 @@ async function takeCaptureWithFaceDetection() {
         // Check for image quality metrics
         // 1. Check if face is large enough (already implemented in face detection)
         // 2. Check for blur using variance of Laplacian
-        const faceRegion = context.getImageData(box.x, box.y, box.width, box.height);
+        const faceRegion = context.getImageData(
+            Math.max(0, box.x), 
+            Math.max(0, box.y), 
+            Math.min(canvas.width - box.x, box.width), 
+            Math.min(canvas.height - box.y, box.height)
+        );
+        
         const blurScore = calculateBlurScore(faceRegion);
         
         if (blurScore < 100) { // Adjust threshold as needed
@@ -1136,15 +1192,21 @@ async function takeCaptureWithFaceDetection() {
         // Convert to base64 data URL
         const imageData = croppedCanvas.toDataURL('image/jpeg', 0.92);
         
-        // Only add to captured images if face is detected (fixing the duplicate push bug)
+        // Add to captured images
         capturedImages.push(imageData);
         captureCount++;
         updateCaptureUI();
         
-        // Play capture sound and show preview
-        const captureSound = new Audio('/sounds/camera-shutter.mp3');
-        captureSound.play().catch(e => console.log('Audio play error:', e));
+        // Play capture sound (with fallback if audio fails)
+        try {
+            const captureSound = new Audio('/sounds/camera-shutter.mp3');
+            captureSound.volume = 0.5;
+            captureSound.play().catch(e => console.log('Audio play error:', e));
+        } catch (audioError) {
+            console.log('Audio not supported:', audioError);
+        }
         
+        // Show preview
         const imgElement = document.createElement('img');
         imgElement.src = imageData;
         imgElement.className = 'captured-image';
@@ -1158,35 +1220,46 @@ async function takeCaptureWithFaceDetection() {
     }
 }
 
-// Helper function to calculate blur score using variance
+// Helper function to calculate blur score using variance with error handling
 function calculateBlurScore(imageData) {
-    const data = imageData.data;
-    const width = imageData.width;
-    const height = imageData.height;
-    
-    // Convert to grayscale if needed
-    const grayscale = new Uint8Array(width * height);
-    for (let i = 0, j = 0; i < data.length; i += 4, j++) {
-        grayscale[j] = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    try {
+        const data = imageData.data;
+        const width = imageData.width;
+        const height = imageData.height;
+        
+        // Ensure valid dimensions
+        if (width <= 0 || height <= 0 || !data || data.length === 0) {
+            return 200; // Return a default score for invalid data
+        }
+        
+        // Convert to grayscale
+        const grayscale = new Uint8Array(width * height);
+        for (let i = 0, j = 0; i < data.length; i += 4, j++) {
+            grayscale[j] = (data[i] + data[i + 1] + data[i + 2]) / 3;
+        }
+        
+        // Calculate variance (simplified Laplacian)
+        let sum = 0;
+        let mean = 0;
+        
+        // Calculate mean
+        for (let i = 0; i < grayscale.length; i++) {
+            mean += grayscale[i];
+        }
+        mean /= grayscale.length;
+        
+        // Calculate variance
+        for (let i = 0; i < grayscale.length; i++) {
+            sum += Math.pow(grayscale[i] - mean, 2);
+        }
+        
+        return sum / grayscale.length;
+    } catch (error) {
+        console.error('Error calculating blur score:', error);
+        return 200; // Return a default value on error (assume image is not blurry)
     }
-    
-    // Calculate variance (simplified Laplacian)
-    let sum = 0;
-    let mean = 0;
-    
-    // Calculate mean
-    for (let i = 0; i < grayscale.length; i++) {
-        mean += grayscale[i];
-    }
-    mean /= grayscale.length;
-    
-    // Calculate variance
-    for (let i = 0; i < grayscale.length; i++) {
-        sum += Math.pow(grayscale[i] - mean, 2);
-    }
-    
-    return sum / grayscale.length;
 }
+
 // Update capture UI elements
 function updateCaptureUI() {
     const progress = (captureCount / TOTAL_CAPTURES) * 100;
@@ -1194,7 +1267,7 @@ function updateCaptureUI() {
     captureStatus.textContent = `Captured ${captureCount}/${TOTAL_CAPTURES} images`;
 }
 
-// Finalize the capture process with improved training triggering
+// Finalize the capture process with improved error handling
 async function finalizeCaptureProcess() {
     if (capturedImages.length < TOTAL_CAPTURES) {
         showToast(`Only captured ${capturedImages.length} images. Need ${TOTAL_CAPTURES} for best results.`, 'info');
@@ -1207,6 +1280,7 @@ async function finalizeCaptureProcess() {
     try {
         // Show loading overlay
         loadingOverlay.style.display = 'flex';
+        loadingOverlay.querySelector('p').textContent = 'Processing and uploading images...';
         
         // Send captured images to server
         const response = await fetch('/api/register-employee', {
@@ -1219,7 +1293,8 @@ async function finalizeCaptureProcess() {
         });
         
         if (!response.ok) {
-            throw new Error('Server error during registration');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.message || `Server error during registration (${response.status})`);
         }
         
         const result = await response.json();
@@ -1228,20 +1303,28 @@ async function finalizeCaptureProcess() {
             throw new Error(result.message || 'Unknown error during registration');
         }
         
-        // Explicitly trigger training after successful registration
-        const trainingResponse = await fetch('/api/trigger-training', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: employeeName
-            })
-        });
+        // Update loading text
+        loadingOverlay.querySelector('p').textContent = 'Training recognition model...';
         
-        if (!trainingResponse.ok) {
-            console.warn('Training may not have completed successfully');
-            showToast('Registration successful, but training may need manual activation', 'warning');
-        } else {
-            showToast('Employee registered and training completed successfully!', 'success');
+        // Explicitly trigger training after successful registration
+        try {
+            const trainingResponse = await fetch('/api/trigger-training', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: employeeName
+                })
+            });
+            
+            if (!trainingResponse.ok) {
+                console.warn('Training may not have completed successfully');
+                showToast('Registration successful, but training may need manual activation', 'warning');
+            } else {
+                showToast('Employee registered and training completed successfully!', 'success');
+            }
+        } catch (trainingError) {
+            console.error('Training error:', trainingError);
+            showToast('Employee registered, but training failed. Admin action required.', 'warning');
         }
         
         // Stop camera
@@ -1261,6 +1344,7 @@ async function finalizeCaptureProcess() {
     } catch (error) {
         console.error('Error registering employee:', error);
         showToast(`Failed to register employee: ${error.message}`, 'error');
+        // Don't change UI state on error so user can try again
     } finally {
         loadingOverlay.style.display = 'none';
     }
@@ -1274,6 +1358,7 @@ function resetForm() {
     capturedImagesContainer.innerHTML = '';
     captureProgress.style.width = '0%';
     captureStatus.textContent = `Ready to capture 0/${TOTAL_CAPTURES} images`;
+    feedbackMessage.textContent = '';
     
     // Reset forms
     employeeNameInput.value = '';
@@ -1282,10 +1367,15 @@ function resetForm() {
     updateStepUI(1);
 }
 
-// Show toast notification
+// Show toast notification with auto-close
 function showToast(message, type = 'info') {
     const toast = document.getElementById('toast');
     const toastMessage = document.getElementById('toastMessage');
+    
+    // Clear any existing timeouts
+    if (toast.timeoutId) {
+        clearTimeout(toast.timeoutId);
+    }
     
     // Set message
     toastMessage.textContent = message;
@@ -1296,7 +1386,7 @@ function showToast(message, type = 'info') {
     toast.classList.add('show');
     
     // Auto hide after 3 seconds
-    setTimeout(() => {
+    toast.timeoutId = setTimeout(() => {
         toast.classList.remove('show');
     }, 3000);
 }
