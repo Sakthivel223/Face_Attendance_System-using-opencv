@@ -559,7 +559,7 @@
         }
         
         // Load known faces from server
-    async function loadKnownFaces() {
+        async function loadKnownFaces() {
     try {
         const response = await fetch('/api/known-faces');
         
@@ -569,24 +569,43 @@
         
         const data = await response.json();
         
-        if (!data || Object.keys(data).length === 0) {
-            console.error('Known faces data is empty!');
-            showToast('Warning: No known faces found in database', 'warning');
+        if (!data || !Array.isArray(data) || data.length === 0) {
+            console.warn('Known faces data is empty or not in expected format!');
+            showToast('Warning: No known faces found in database', 'info');
             knownFaces = [];
             return;
         }
         
-        knownFaces = Object.entries(data).map(([name, descriptor]) => {
-            // Validate descriptor
-            if (!descriptor || !Array.isArray(descriptor) || descriptor.length === 0) {
-                console.error(`Invalid descriptor for ${name}`);
+        // Process the array format instead of object format
+        knownFaces = data.map(item => {
+            // Validate the item has both name and descriptor
+            if (!item || !item.name || !item.descriptor) {
+                console.error(`Invalid face data: missing name or descriptor`);
                 return null;
             }
             
-            return {
-                name,
-                descriptor: new Float32Array(descriptor)
-            };
+            // Validate descriptor
+            if (!Array.isArray(item.descriptor) || item.descriptor.length === 0) {
+                console.error(`Invalid descriptor for ${item.name}`);
+                return null;
+            }
+            
+            // Convert descriptor to Float32Array
+            try {
+                const descriptorArray = new Float32Array(item.descriptor);
+                // Verify the descriptor has the expected length
+                if (descriptorArray.length !== 128) {
+                    console.warn(`Descriptor for ${item.name} has unusual length: ${descriptorArray.length}`);
+                }
+                
+                return {
+                    name: item.name,
+                    descriptor: descriptorArray
+                };
+            } catch (error) {
+                console.error(`Error converting descriptor for ${item.name}:`, error);
+                return null;
+            }
         }).filter(face => face !== null); // Remove any invalid entries
         
         console.log(`Loaded ${knownFaces.length} known faces`);
@@ -597,12 +616,19 @@
             console.log(`Descriptor length: ${sampleDescriptor.length}`);
             console.log(`Sample values: ${Array.from(sampleDescriptor.slice(0, 5))}`);
         }
+        
+        // Update UI if needed
+        updateTotalEmployees();
+        
+        return knownFaces.length;
     } catch (error) {
         console.error('Error loading known faces:', error);
         showToast('Failed to load employee data', 'error');
         knownFaces = [];
+        return 0;
     }
 }
+
         
         // Start the recognition process
         async function startRecognition() {
@@ -611,32 +637,64 @@
     loadingOverlay.style.display = 'flex';
     
     try {
+        // Load face detection models if not already loaded
         await loadFaceDetectionModel();
         
-        // Start the camera with higher resolution
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-            video: { 
-                width: { ideal: 1280 },
-                height: { ideal: 720 },
-                facingMode: 'user',
-                frameRate: { ideal: 30 } // Request higher frame rate
-            } 
-        });
+        // Make sure we have faces to recognize
+        if (!knownFaces || knownFaces.length === 0) {
+            await loadKnownFaces();
+            if (knownFaces.length === 0) {
+                showToast('Warning: No faces in database. Recognition may not work correctly.', 'warning');
+            }
+        }
         
+        // Try to get camera with error handling
+        let stream;
+        try {
+            // Start with ideal settings but have fallbacks
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { 
+                    width: { ideal: 1280, min: 640 },
+                    height: { ideal: 720, min: 480 },
+                    facingMode: 'user',
+                    frameRate: { ideal: 30, min: 15 }
+                } 
+            });
+        } catch (err) {
+            console.error("Error accessing camera with high settings:", err);
+            
+            // Try with minimal settings
+            stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'user' } 
+            });
+            
+            showToast('Using minimal camera settings due to device limitations', 'info');
+        }
+        
+        // Set video source
         video.srcObject = stream;
         cameraStatusElement.textContent = 'Active';
         cameraStatusElement.className = 'status-active';
         
-        // Wait for video to be ready
-        await new Promise(resolve => {
-            video.onloadedmetadata = () => {
-                video.play();
-                resolve();
-            };
+        // Wait for video to be ready with timeout
+        await Promise.race([
+            new Promise(resolve => {
+                video.onloadedmetadata = () => {
+                    video.play().then(resolve).catch(e => {
+                        console.error("Error playing video:", e);
+                        resolve(); // Resolve anyway to continue
+                    });
+                };
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Video loading timeout")), 10000))
+        ]).catch(err => {
+            console.warn("Video loading issue:", err);
+            // Continue anyway, might still work
         });
         
         loadingOverlay.style.display = 'none';
-        document.querySelector('.video-placeholder').style.display = 'none';
+        const placeholder = document.querySelector('.video-placeholder');
+        if (placeholder) placeholder.style.display = 'none';
         
         // Clear any previous detected faces to start fresh
         clearDetectedFaces();
@@ -653,7 +711,10 @@
     } catch (error) {
         console.error('Error starting recognition:', error);
         loadingOverlay.style.display = 'none';
-        showToast('Failed to start camera or recognition', 'error');
+        showToast(`Failed to start camera: ${error.message}`, 'error');
+        
+        // Reset any partial setup
+        stopRecognition();
     }
 }
         
@@ -697,13 +758,13 @@ async function processVideoFrame() {
         return;
     }
     
-    // Draw the current video frame to the canvas
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    
     try {
         // Get the video container element
         const videoContainer = video.parentElement;
+        
+        // Draw the current video frame to the canvas
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
         
         // Make sure overlay exists and is properly configured
         let overlay = videoContainer.querySelector('.face-overlay');
@@ -718,7 +779,6 @@ async function processVideoFrame() {
             overlay.style.pointerEvents = 'none';
             overlay.style.zIndex = '10';
             videoContainer.appendChild(overlay);
-            console.log("Overlay created and appended to container");
         }
         
         // Always update overlay to match video dimensions exactly
@@ -734,15 +794,27 @@ async function processVideoFrame() {
         const scaleX = videoRect.width / canvas.width;
         const scaleY = videoRect.height / canvas.height;
         
+        // Only proceed with detection if models are loaded
+        if (!faceDetectionModel) {
+            console.log("Face detection models not loaded yet");
+            requestAnimationFrame(processVideoFrame);
+            return;
+        }
+        
         // Detect faces in the current frame
         const detections = await faceapi.detectAllFaces(canvas)
             .withFaceLandmarks()
             .withFaceDescriptors();
         
         // Process and draw detected faces
-        if (detections.length > 0) {
+        if (detections && detections.length > 0) {
             // Process each detected face
             for (const detection of detections) {
+                if (!detection.descriptor) {
+                    console.warn("Missing descriptor in detection");
+                    continue;
+                }
+                
                 const matchResult = findBestMatch(detection.descriptor);
                 const box = detection.detection.box;
                 
@@ -760,24 +832,29 @@ async function processVideoFrame() {
                     // Known face - green box
                     drawEnhancedFaceBox(overlayCtx, scaledBox, matchResult.name, matchResult.confidence, true);
                     
-                    // Handle attendance logging in the background
+                    // Handle attendance logging with proper error handling
                     const now = Date.now();
                     if (!lastDetectedTime[matchResult.name] || now - lastDetectedTime[matchResult.name] > DETECTION_DELAY) {
                         lastDetectedTime[matchResult.name] = now;
-                        setTimeout(async () => {
+                        try {
                             const isEntry = await logAttendance(matchResult.name);
                             if (isEntry !== null) {
-                                speakGreeting(matchResult.name);
+                                speakGreeting(matchResult.name, isEntry === "entry");
                             }
-                        }, 0);
+                        } catch (error) {
+                            console.error("Error logging attendance:", error);
+                        }
                     }
                 } else {
                     // Unknown face - red box with "Unknown" label
                     drawEnhancedFaceBox(overlayCtx, scaledBox, 'Unknown', 0, false);
                     
-                    setTimeout(async () => {
+                    // Process unknown face with proper error handling
+                    try {
                         await saveUnknownFace(canvas, box, detections);
-                    }, 0);
+                    } catch (error) {
+                        console.error("Error saving unknown face:", error);
+                    }
                 }
             }
             
@@ -870,21 +947,50 @@ let simultaneousFacesDetected = false;
 
 // Save unknown face to folder
 async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
+    if (!sourceCanvas || !faceBox) {
+        console.error("Invalid parameters for saveUnknownFace");
+        return;
+    }
+    
     try {
+        // Validate box dimensions to prevent errors
+        if (faceBox.width <= 0 || faceBox.height <= 0 || 
+            faceBox.x < 0 || faceBox.y < 0 ||
+            faceBox.x + faceBox.width > sourceCanvas.width ||
+            faceBox.y + faceBox.height > sourceCanvas.height) {
+            console.warn("Invalid face box dimensions, skipping save");
+            return;
+        }
+        
         // Create a temporary canvas to hold just the face
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = faceBox.width;
         tempCanvas.height = faceBox.height;
-        const tempCtx = tempCanvas.getContext('2d');
+        const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
         
         // Extract face region from source canvas
-        const faceRegion = sourceCanvas.getContext('2d').getImageData(
-            faceBox.x, faceBox.y, faceBox.width, faceBox.height
-        );
-        tempCtx.putImageData(faceRegion, 0, 0);
+        try {
+            const faceRegion = sourceCanvas.getContext('2d').getImageData(
+                faceBox.x, faceBox.y, faceBox.width, faceBox.height
+            );
+            tempCtx.putImageData(faceRegion, 0, 0);
+        } catch (error) {
+            console.error("Error extracting face region:", error);
+            return;
+        }
         
         // Compute face descriptor for comparison
-        const faceDescriptor = await faceapi.computeFaceDescriptor(tempCanvas);
+        let faceDescriptor;
+        try {
+            faceDescriptor = await faceapi.computeFaceDescriptor(tempCanvas);
+            if (!faceDescriptor) {
+                console.warn("Failed to compute face descriptor");
+                return;
+            }
+        } catch (error) {
+            console.error("Error computing face descriptor:", error);
+            return;
+        }
         
         // Check if face is already in known faces database
         const matchResult = findBestMatch(faceDescriptor);
@@ -893,9 +999,6 @@ async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
         if (allFacesDetected && allFacesDetected.length > 1) {
             simultaneousFacesDetected = true;
             console.log(`Multiple faces detected: ${allFacesDetected.length}`);
-            
-            // Log all detected faces for debugging
-            console.log('All detected faces:', allFacesDetected);
         }
         
         // If it's a match with confidence above threshold, don't save as unknown
@@ -905,7 +1008,6 @@ async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
         }
         
         // Check if this face is similar to any face we've already detected in this session
-        // to prevent storing the same person multiple times
         const isSimilarToDetected = isAlreadyDetected(faceDescriptor);
         
         if (isSimilarToDetected) {
@@ -923,7 +1025,7 @@ async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
         const faceCanvas = document.createElement('canvas');
         faceCanvas.width = faceBox.width;
         faceCanvas.height = faceBox.height;
-        const faceCtx = faceCanvas.getContext('2d');
+        const faceCtx = faceCanvas.getContext('2d', { willReadFrequently: true });
         
         // Draw just the face region to the new canvas
         faceCtx.drawImage(
@@ -933,7 +1035,13 @@ async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
         );
         
         // Convert to data URL
-        const dataURL = faceCanvas.toDataURL('image/png');
+        let dataURL;
+        try {
+            dataURL = faceCanvas.toDataURL('image/png');
+        } catch (error) {
+            console.error("Error converting canvas to data URL:", error);
+            return;
+        }
         
         // Generate timestamp for filename
         const now = new Date();
@@ -942,29 +1050,43 @@ async function saveUnknownFace(sourceCanvas, faceBox, allFacesDetected) {
         // Add flag if multiple faces were detected
         const multiFlag = simultaneousFacesDetected ? 'multi-' : '';
         
-        // Send to server for saving
-        const response = await fetch('/api/save-unknown-face', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                imageData: dataURL,
-                filename: `unknown-face-${multiFlag}${timestamp}.png`
-            })
-        });
+        // Set timeout to prevent excessive API calls
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
         
-        // Check if the response was successful
-        if (response.ok) {
-            const data = await response.json();
-            console.log('Unknown face saved successfully:', data.message || 'Success');
-        } else {
-            const errorData = await response.json().catch(() => null);
-            throw new Error(errorData?.detail || `Server error: ${response.status} ${response.statusText}`);
+        // Send to server for saving
+        try {
+            const response = await fetch('/api/save-unknown-face', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    imageData: dataURL,
+                    filename: `unknown-face-${multiFlag}${timestamp}.png`
+                }),
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            
+            // Check if the response was successful
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Unknown face saved successfully:', data.message || 'Success');
+            } else {
+                const errorData = await response.json().catch(() => null);
+                throw new Error(errorData?.detail || `Server error: ${response.status} ${response.statusText}`);
+            }
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.warn('Save unknown face request timed out');
+            } else {
+                console.error('Error saving unknown face to server:', error);
+            }
         }
     } catch (error) {
-        console.error('Error saving unknown face:', error);
+        console.error('Error in saveUnknownFace:', error);
     }
 }
-
 // Helper function to determine if a face is already detected in this session
 function isAlreadyDetected(newFaceDescriptor, similarityThreshold = 0.7) {
     if (!detectedFaces.length) return false;
@@ -1007,8 +1129,7 @@ async function processDetectedFaces(video, canvas, detections) {
     // simultaneousFacesDetected = false;
 }
         // Find the best match for a face descriptor
-// Find the best match for a face descriptor
-function findBestMatch(faceDescriptor) {
+        function findBestMatch(faceDescriptor) {
     let bestMatch = { isMatch: false, name: 'Unknown', confidence: 0 };
     const HIGH_CONFIDENCE_THRESHOLD = 0.70; // Slightly higher for better accuracy
     const MEDIUM_CONFIDENCE_THRESHOLD = 0.55; 
@@ -1018,24 +1139,43 @@ function findBestMatch(faceDescriptor) {
         return bestMatch;
     }
     
+    if (!faceDescriptor || faceDescriptor.length === 0) {
+        console.error('Invalid face descriptor provided to findBestMatch');
+        return bestMatch;
+    }
+    
     try {
         // Create array to collect all match results
         let allMatches = [];
         
+        // Ensure the input is a Float32Array
+        const faceDescriptorArray = faceDescriptor instanceof Float32Array ? 
+            faceDescriptor : new Float32Array(faceDescriptor);
+        
         for (const knownFace of knownFaces) {
-            if (!knownFace.descriptor) {
+            if (!knownFace.descriptor || knownFace.descriptor.length === 0) {
                 console.warn(`Missing descriptor for known face: ${knownFace.name}`);
                 continue;
             }
             
-            // Ensure descriptors are Float32Array type for consistent comparison
-            const faceDescriptorArray = new Float32Array(faceDescriptor);
+            // Ensure both descriptors are Float32Array
+            const knownDescriptor = knownFace.descriptor instanceof Float32Array ?
+                knownFace.descriptor : new Float32Array(knownFace.descriptor);
+            
+            // Check if the descriptor lengths match
+            if (faceDescriptorArray.length !== knownDescriptor.length) {
+                console.warn(`Descriptor length mismatch for ${knownFace.name}: ${faceDescriptorArray.length} vs ${knownDescriptor.length}`);
+                continue;
+            }
             
             // Calculate face similarity using Euclidean distance
-            const distance = faceapi.euclideanDistance(
-                faceDescriptorArray,
-                new Float32Array(knownFace.descriptor)
-            );
+            let distance;
+            try {
+                distance = faceapi.euclideanDistance(faceDescriptorArray, knownDescriptor);
+            } catch (error) {
+                console.error(`Error calculating distance for ${knownFace.name}:`, error);
+                continue;
+            }
             
             // Convert distance to similarity score (0-1)
             const confidence = 1 - distance;
@@ -1112,9 +1252,14 @@ function roundedRectPath(ctx, x, y, width, height, radius) {
     ctx.arcTo(x, y, x + width, y, radius);
 }
 // Log attendance for a recognized employee
-// Improved attendance logging function
 async function logAttendance(employeeName) {
     try {
+        // Validate input
+        if (!employeeName || typeof employeeName !== 'string') {
+            console.error("Invalid employee name provided to logAttendance");
+            return null;
+        }
+        
         // Debounce to prevent multiple submissions within 3 seconds
         if (window.lastAttendanceLog && ((new Date()) - window.lastAttendanceLog) < 3000) {
             console.log("Attendance logging throttled, please wait a few seconds");
@@ -1125,66 +1270,146 @@ async function logAttendance(employeeName) {
         window.lastAttendanceLog = new Date();
         
         const today = new Date();
-        const currentTime = today.toLocaleTimeString();
+        const currentTime = today.toLocaleTimeString('en-US', {hour12: false});
         
         console.log(`Attempting to log attendance for ${employeeName} at ${currentTime}`);
         
-        // Let the server determine if this is an entry or exit
-        const attendanceRecord = {
+        // Try using a direct entry first instead of auto detection
+        // This is a more reliable approach if we're having issues
+        const forceEntry = {
             name: employeeName,
             timestamp: currentTime,
-            action: "auto"  // Let server decide based on today's records
+            action: "entry"  // Force as entry instead of auto-detection
         };
         
-        // Send to backend
-        const response = await fetch('/api/log-attendance', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(attendanceRecord)
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            // Update local tracking data if needed
-            if (!attendanceData[employeeName]) {
-                attendanceData[employeeName] = { name: employeeName };
-            }
+        try {
+            const entryResponse = await fetch('/api/log-attendance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(forceEntry)
+            });
             
-            // Play appropriate greeting based on entry/exit
-            if (result.action === "entry") {
-                attendanceData[employeeName].entryTime = currentTime;
-                speakGreeting(employeeName, true);
-                console.log(`Logged entry for ${employeeName} at ${currentTime}`);
-                
-                // Update UI or notification
-                showNotification(`Entry recorded for ${employeeName}`, "success");
-            } else if (result.action === "exit") {
-                attendanceData[employeeName].exitTime = currentTime;
-                speakGreeting(employeeName, false);
-                console.log(`Logged exit for ${employeeName} at ${currentTime}`);
-                
-                // Update UI or notification
-                showNotification(`Exit recorded for ${employeeName}`, "success");
+            if (entryResponse.ok) {
+                const result = await entryResponse.json();
+                if (result.success) {
+                    console.log(`Successfully forced entry for ${employeeName}`);
+                    
+                    // Update UI
+                    if (typeof window.attendanceData === 'undefined') {
+                        window.attendanceData = {};
+                    }
+                    
+                    if (!window.attendanceData[employeeName]) {
+                        window.attendanceData[employeeName] = { name: employeeName };
+                    }
+                    
+                    window.attendanceData[employeeName].entryTime = currentTime;
+                    
+                    showNotification(`Entry recorded for ${employeeName}`, "success");
+                    
+                    // Update attendance counter if function exists
+                    if (typeof updateTodayAttendance === 'function') {
+                        updateTodayAttendance();
+                    }
+                    
+                    return "entry";
+                } else if (result.message && result.message.includes("already has an entry")) {
+                    // Try exit instead
+                    console.log("Entry already exists, trying exit");
+                    
+                    const exitResponse = await fetch('/api/log-attendance', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: employeeName,
+                            timestamp: currentTime,
+                            action: "exit"
+                        })
+                    });
+                    
+                    if (exitResponse.ok) {
+                        const exitResult = await exitResponse.json();
+                        if (exitResult.success) {
+                            // Update UI
+                            if (typeof window.attendanceData === 'undefined') {
+                                window.attendanceData = {};
+                            }
+                            
+                            if (!window.attendanceData[employeeName]) {
+                                window.attendanceData[employeeName] = { name: employeeName };
+                            }
+                            
+                            window.attendanceData[employeeName].exitTime = currentTime;
+                            
+                            showNotification(`Exit recorded for ${employeeName}`, "success");
+                            return "exit";
+                        }
+                    }
+                }
             }
-            
-            // Update attendance display if needed
-            updateTodayAttendance();
-        } else {
-            console.log("Attendance log result:", result.message);
-            // Only show an alert for important messages, not for routine "already logged" messages
-            if (!result.message.includes("already has complete attendance")) {
-                showNotification(result.message, "info");
-            }
+        } catch (directError) {
+            console.error("Error with direct entry attempt:", directError);
+            // Continue to fallback method
         }
         
-        return result.success;
+        // Emergency fallback - store locally if server methods fail
+        const backupData = localStorage.getItem('attendanceBackup') || '{}';
+        const backup = JSON.parse(backupData);
+        
+        const dateKey = today.toISOString().split('T')[0];
+        if (!backup[dateKey]) {
+            backup[dateKey] = {};
+        }
+        
+        if (!backup[dateKey][employeeName]) {
+            backup[dateKey][employeeName] = {
+                entry: currentTime
+            };
+            console.log(`Local backup: Recorded entry for ${employeeName}`);
+            showNotification(`Backup entry recorded for ${employeeName}`, "warning");
+        } else if (!backup[dateKey][employeeName].exit) {
+            backup[dateKey][employeeName].exit = currentTime;
+            console.log(`Local backup: Recorded exit for ${employeeName}`);
+            showNotification(`Backup exit recorded for ${employeeName}`, "warning");
+        }
+        
+        localStorage.setItem('attendanceBackup', JSON.stringify(backup));
+        
+        // Notify user of fallback approach
+        showNotification("Using local backup system due to server issues. Please inform administrator.", "warning");
+        
+        return backup[dateKey][employeeName].exit ? "exit" : "entry";
     } catch (error) {
         console.error('Error logging attendance:', error);
-        showNotification("Error logging attendance. Please try again.", "error");
-        return false;
+        showNotification("Error logging attendance. Using local backup.", "error");
+        
+        // Always try to record something locally in case of failures
+        try {
+            const today = new Date();
+            const currentTime = today.toLocaleTimeString();
+            const dateStr = today.toISOString().split('T')[0];
+            
+            const emergencyLog = {
+                date: dateStr,
+                time: currentTime,
+                name: employeeName,
+                type: "emergency"
+            };
+            
+            // Store in localStorage
+            const logs = JSON.parse(localStorage.getItem('emergencyLogs') || '[]');
+            logs.push(emergencyLog);
+            localStorage.setItem('emergencyLogs', JSON.stringify(logs));
+            
+            console.log("Created emergency backup record");
+        } catch (backupError) {
+            console.error("Failed to create emergency record:", backupError);
+        }
+        
+        return null;
     }
 }
+
 
 // Improved notification function (add this to your code)
 function showNotification(message, type = "info") {
@@ -1265,9 +1490,13 @@ function speakGreeting(name, isEntry) {
     
     console.log(`Speaking greeting: ${greeting}`);
     
-    // Play appropriate sound effect if available
-    const soundFile = isEntry ? 'entry-sound.mp3' : 'exit-sound.mp3';
-    playSound(soundFile);
+    // Skip trying to play sound files that don't exist
+    // Instead, just use browser's built-in beep if possible
+    if (isEntry) {
+        console.log("Entry event detected");
+    } else {
+        console.log("Exit event detected");
+    }
     
     // Improved speech synthesis with better settings
     if ('speechSynthesis' in window) {
@@ -1281,8 +1510,8 @@ function speakGreeting(name, isEntry) {
         // Try to use a higher quality voice if available
         const voices = window.speechSynthesis.getVoices();
         const preferredVoices = voices.filter(v => 
-            v.name.includes('Google') || 
-            v.name.includes('Microsoft') || 
+            v.name.includes('Google') ||
+            v.name.includes('Microsoft') ||
             v.name.includes('Premium')
         );
         
@@ -1298,17 +1527,17 @@ function speakGreeting(name, isEntry) {
 }
 
 // Helper function to play sound effects
-function playSound(soundFile) {
-    try {
-        const audio = new Audio(`/sounds/${soundFile}`);
-        audio.volume = 0.5;  // Set volume to 50%
-        audio.play().catch(err => {
-            console.log('Could not play sound effect:', err);
-        });
-    } catch (error) {
-        console.log('Error playing sound effect:', error);
-    }
-}
+// function playSound(soundFile) {
+//     try {
+//         const audio = new Audio(`/sounds/${soundFile}`);
+//         audio.volume = 0.5;  // Set volume to 50%
+//         audio.play().catch(err => {
+//             console.log('Could not play sound effect:', err);
+//         });
+//     } catch (error) {
+//         console.log('Error playing sound effect:', error);
+//     }
+// }
 // Improved function to get registered employees count
 async function updateTotalEmployees() {
     try {

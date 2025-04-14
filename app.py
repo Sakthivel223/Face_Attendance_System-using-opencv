@@ -6,15 +6,14 @@ import base64
 import json
 import os
 import shutil
-from flask import jsonify, request
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, time
 import uuid
 import cv2
 from typing import List, Dict, Any
 
-# Load the Haar Cascade
+# Load the face recognition libraries
 face_cascade = cv2.CascadeClassifier('static/models/haarcascade_frontalface_default.xml')
 import face_recognition
 
@@ -95,7 +94,6 @@ def save_known_faces(faces_data):
         # Create backup of existing file if it exists
         if os.path.exists(KNOWN_FACES_FILE):
             backup_file = f"{KNOWN_FACES_FILE}.bak"
-            import shutil
             shutil.copy2(KNOWN_FACES_FILE, backup_file)
             print(f"Created backup of known_faces at {backup_file}")
         
@@ -127,7 +125,6 @@ def save_known_faces(faces_data):
         # Try to restore from backup if save failed
         if os.path.exists(f"{KNOWN_FACES_FILE}.bak"):
             try:
-                import shutil
                 shutil.copy2(f"{KNOWN_FACES_FILE}.bak", KNOWN_FACES_FILE)
                 print("Restored known_faces from backup after save failure")
             except Exception as restore_error:
@@ -191,45 +188,46 @@ def initialize_attendance_file(file_path):
         # Create a new DataFrame with the required columns
         df = pd.DataFrame(columns=["Date", "Name", "EntryTime", "ExitTime"])
         
+        # Fill with empty strings to ensure columns exist
+        df = df.astype(str)
+        for col in df.columns:
+            df[col] = df[col].fillna("")
+        
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         
         # Save to Excel
         df.to_excel(file_path, index=False)
+    else:
+        # Verify existing file has all needed columns
+        try:
+            df = pd.read_excel(file_path)
+            required_columns = ["Date", "Name", "EntryTime", "ExitTime"]
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            
+            if missing_columns:
+                # Add any missing columns
+                for col in missing_columns:
+                    df[col] = ""
+                    
+                # Save the updated DataFrame
+                df.to_excel(file_path, index=False)
+                print(f"Added missing columns to attendance file: {missing_columns}")
+        except Exception as e:
+            print(f"Error verifying attendance file columns: {str(e)}")
+            # Create a backup of problematic file
+            if os.path.exists(file_path):
+                backup_path = f"{file_path}.bak.{int(time.time())}"
+                shutil.copy2(file_path, backup_path)
+                print(f"Backed up problematic file to {backup_path}")
+                
+            # Create a new file with correct structure
+            df = pd.DataFrame(columns=["Date", "Name", "EntryTime", "ExitTime"])
+            df = df.astype(str) 
+            df.to_excel(file_path, index=False)
+            print(f"Created new attendance file with correct structure")
     
     return file_path
-
-# Replace all instances of .append() with pd.concat()
-# Example:
-
-def log_attendance(name, entry_time, exit_time):
-    try:
-        print(f"Logging attendance for: {name}, Entry Time: {entry_time}, Exit Time: {exit_time}")
-        
-        # Load existing attendance data
-        if os.path.exists('attendance_log.xlsx'):
-            attendance_df = pd.read_excel('attendance_log.xlsx')
-        else:
-            attendance_df = pd.DataFrame(columns=['Name', 'Entry Time', 'Exit Time', 'Date'])
-        
-        # Create new entry
-        new_entry = {
-            'Name': name,
-            'Entry Time': entry_time,
-            'Exit Time': exit_time,
-            'Date': datetime.now().strftime('%Y-%m-%d')
-        }
-        
-        # Use concat instead of append
-        attendance_df = pd.concat([attendance_df, pd.DataFrame([new_entry])], ignore_index=True)
-        
-        # Save to Excel
-        attendance_df.to_excel('attendance_log.xlsx', index=False)
-        return True
-    except Exception as e:
-        print(f"Error logging attendance: {e}")
-        return False
-    
 
 def log_attendance_to_excel(name, entry_time=None, exit_time=None):
     """Log attendance to Excel file with improved entry/exit handling"""
@@ -431,7 +429,7 @@ async def log_attendance_api(request: Request):
         data = await request.json()
         name = data.get("name")
         timestamp = data.get("timestamp")
-        action = data.get("action", "auto")  # 'entry', 'exit', or 'auto' (detect automatically)
+        action = data.get("action", "auto")
         
         if not name:
             raise HTTPException(status_code=400, detail="Employee name is required")
@@ -440,26 +438,56 @@ async def log_attendance_api(request: Request):
         current_time = datetime.now().strftime("%H:%M:%S")
         time_to_log = timestamp or current_time
         
-        # Determine if this is an entry or exit based on current records
+        # Get today's date
         today = datetime.now().strftime("%Y-%m-%d")
+        
+        # Get/initialize attendance file
         file_path = get_attendance_file_path()
         initialize_attendance_file(file_path)
         
-        # Default response
-        result = {
-            "success": False, 
-            "message": "Failed to log attendance", 
-            "action": None
-        }
+        # Safety check - verify file exists after initialization
+        if not os.path.exists(file_path):
+            # Critical error - we can't continue
+            raise HTTPException(
+                status_code=500, 
+                detail="Could not create or access attendance file"
+            )
         
-        # If action is 'auto', determine what to do based on existing records
-        if action == "auto":
+        # Read file with error handling
+        try:
             df = pd.read_excel(file_path)
-            # Ensure proper string conversion
-            if "ExitTime" in df.columns:
-                df["ExitTime"] = df["ExitTime"].astype(str)
             
-            # Check for today's record
+            # Ensure all required columns exist
+            required_columns = ["Date", "Name", "EntryTime", "ExitTime"]
+            for col in required_columns:
+                if col not in df.columns:
+                    df[col] = ""
+            
+            # Fix column types
+            df["Date"] = df["Date"].astype(str)
+            df["Name"] = df["Name"].astype(str)
+            df["EntryTime"] = df["EntryTime"].astype(str)
+            df["ExitTime"] = df["ExitTime"].astype(str)
+            
+            # Fill NaN values
+            df = df.fillna("")
+        except Exception as e:
+            # File might be corrupted - create new one
+            print(f"Error reading attendance file: {str(e)}")
+            
+            # Backup problematic file
+            backup_path = f"{file_path}.bak.{int(time.time())}"
+            if os.path.exists(file_path):
+                shutil.copy2(file_path, backup_path)
+                print(f"Backed up problematic file to {backup_path}")
+            
+            # Create new DataFrame
+            df = pd.DataFrame(columns=["Date", "Name", "EntryTime", "ExitTime"])
+            df = df.astype(str)
+        
+        # Determine if this is an entry or exit based on current records
+        if action == "auto":
+            # Filter records for today
             today_record = df[(df["Date"] == today) & (df["Name"] == name)]
             
             if len(today_record) == 0:
@@ -467,8 +495,14 @@ async def log_attendance_api(request: Request):
                 action = "entry"
             else:
                 # Check if exit time is already recorded
-                exit_time = today_record["ExitTime"].iloc[0]
-                exit_recorded = exit_time not in ["", "nan", "None", None, "NaT"] and pd.notna(exit_time)
+                # Get the exit time with error handling
+                try:
+                    exit_time = today_record["ExitTime"].iloc[0]
+                    exit_time_str = str(exit_time).strip()
+                    exit_recorded = exit_time_str not in ["", "nan", "None", "NaT"]
+                except Exception as e:
+                    print(f"Error accessing ExitTime: {str(e)}")
+                    exit_recorded = False
                 
                 if exit_recorded:
                     # Both entry and exit recorded - do nothing
@@ -481,9 +515,9 @@ async def log_attendance_api(request: Request):
                     # Entry recorded but no exit - this is an exit
                     action = "exit"
         
-        # Log entry or exit as determined
+        # Handle entry action
         if action == "entry":
-            # Add new entry record
+            # Create new entry record
             new_row = {
                 "Date": today,
                 "Name": name,
@@ -491,91 +525,88 @@ async def log_attendance_api(request: Request):
                 "ExitTime": ""
             }
             
-            if os.path.exists(file_path):
-                df = pd.read_excel(file_path)
-                
-                # Check if there's already an entry for today
-                today_entry = df[(df["Date"] == today) & (df["Name"] == name)]
-                if len(today_entry) > 0:
-                    # Entry already exists for today
-                    return {
-                        "success": False,
-                        "message": f"{name} already has an entry for today",
-                        "action": None
-                    }
-                
-                # Add new entry
-                df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-            else:
-                # Create new DataFrame with first entry
-                df = pd.DataFrame([new_row])
+            # Check for existing entry
+            today_entry = df[(df["Date"] == today) & (df["Name"] == name)]
+            if len(today_entry) > 0:
+                return {
+                    "success": False,
+                    "message": f"{name} already has an entry for today",
+                    "action": None
+                }
             
-            # Save updated dataframe
-            df.to_excel(file_path, index=False)
+            # Add new entry
+            new_df = pd.DataFrame([new_row])
+            df = pd.concat([df, new_df], ignore_index=True)
             
-            # Set result
-            result = {
-                "success": True,
-                "message": f"Entry recorded for {name} at {time_to_log}",
-                "action": "entry"
-            }
-            
+            # Save with error handling
+            try:
+                df.to_excel(file_path, index=False)
+                return {
+                    "success": True,
+                    "message": f"Entry recorded for {name} at {time_to_log}",
+                    "action": "entry"
+                }
+            except Exception as e:
+                print(f"Error saving entry: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to save entry: {str(e)}")
+        
+        # Handle exit action
         elif action == "exit":
-            # Update existing record with exit time
-            if os.path.exists(file_path):
-                df = pd.read_excel(file_path)
-                
-                # Find today's record
-                mask = (df["Date"] == today) & (df["Name"] == name)
-                matches = df[mask]
-                
-                if len(matches) == 0:
-                    # No entry record found
-                    return {
-                        "success": False,
-                        "message": f"No entry record found for {name} today. Cannot log exit.",
-                        "action": None
-                    }
-                
-                # Check if exit is already recorded
-                exit_time = matches["ExitTime"].iloc[0]
-                if exit_time and str(exit_time).strip() not in ["", "nan", "None", "NaT"] and pd.notna(exit_time):
-                    # Exit already recorded
+            # Find today's record
+            mask = (df["Date"] == today) & (df["Name"] == name)
+            matches = df[mask]
+            
+            if len(matches) == 0:
+                return {
+                    "success": False,
+                    "message": f"No entry record found for {name} today. Cannot log exit.",
+                    "action": None
+                }
+            
+            # Check if exit is already recorded
+            try:
+                exit_time = matches["ExitTime"].iloc[0] 
+                exit_time_str = str(exit_time).strip()
+                if exit_time_str not in ["", "nan", "None", "NaT"]:
                     return {
                         "success": False,
                         "message": f"{name} already has an exit record for today",
                         "action": None
                     }
-                
-                # Update exit time
+            except Exception as e:
+                print(f"Error checking exit time: {str(e)}")
+                # Continue with trying to update
+            
+            # Update exit time
+            try:
                 index = matches.index[0]
                 df.loc[index, "ExitTime"] = time_to_log
                 
                 # Save updated dataframe
                 df.to_excel(file_path, index=False)
                 
-                # Set result
-                result = {
+                return {
                     "success": True,
                     "message": f"Exit recorded for {name} at {time_to_log}",
                     "action": "exit"
                 }
-            else:
-                # No file exists, cannot log exit without entry
-                return {
-                    "success": False,
-                    "message": "Cannot log exit without prior entry",
-                    "action": None
-                }
+            except Exception as e:
+                print(f"Error updating exit time: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to update exit time: {str(e)}")
         
-        return result
+        # Invalid action
+        return {
+            "success": False,
+            "message": f"Invalid action: {action}",
+            "action": None
+        }
     
     except Exception as e:
         import traceback
-        print(f"Error logging attendance: {str(e)}")
+        print(f"Error in log_attendance_api: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
-    
+        
 @app.get("/api/check-attendance-status")
 async def check_attendance_status(name: str):
     """Check if employee has entry/exit records for today"""
@@ -796,9 +827,6 @@ async def serve_sound(sound_name: str):
     else:
         raise HTTPException(status_code=404, detail=f"Sound file {sound_name} not found")
 
-
-
-# Add this after the existing directories setup
 @app.post("/api/save-unknown-face")
 async def save_unknown_face(request: Request):
     """Save an unknown face image to a separate folder outside Dataset"""
